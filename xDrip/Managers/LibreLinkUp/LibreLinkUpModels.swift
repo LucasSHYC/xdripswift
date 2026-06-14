@@ -28,6 +28,7 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
     case jp = 9
     case la = 10
     case us = 11
+    case cn = 12   // new for cn
     
     init?() {
         self = .notConfigured
@@ -58,6 +59,8 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
             self = .la
         case "us":
             self = .us
+        case "cn":
+            self = .cn
         default:
             self = .notConfigured
         }
@@ -90,6 +93,8 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
             return "Latin America"
         case .us:
             return "United States"
+        case .cn:
+            return "China"
         }
     }
     
@@ -101,6 +106,8 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
             switch self {
             case .notConfigured:
                 return "https://api.libreview.io/llu/auth/login"
+            case .cn:
+                return "https://api-cn.myfreestyle.cn/llu/auth/login"
             default:
                 return "https://api-\(self).libreview.io/llu/auth/login"
             }
@@ -115,6 +122,8 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
             switch self {
             case .notConfigured:
                 return "https://api.libreview.io/llu/connections"
+            case .cn:
+                return "https://api-cn.myfreestyle.cn/llu/connections"
             default:
                 return "https://api-\(self).libreview.io/llu/connections"
             }
@@ -126,9 +135,11 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
     /// returns the URL for the graph request based upon self (i.e. the region) and also the passed patient Id
     func urlGraph(patientId: String) -> String {
         if UserDefaults.standard.followerDataSourceType != .libreLinkUpRussia {
-            switch self {
+            switch self {                
             case .notConfigured:
                 return "https://api.libreview.io/llu/connections/\(patientId)/graph"
+            case .cn:
+                return "https://api-cn.myfreestyle.cn/llu/connections/\(patientId)/graph"
             default:
                 return "https://api-\(self).libreview.io/llu/connections/\(patientId)/graph"
             }
@@ -164,6 +175,8 @@ public enum LibreLinkUpRegion: Int, CaseIterable {
             return 10
         case 11: // us
             return 11
+        case 12: // cn
+            return 12
         default:
             fatalError("in libreLinkUpRawValue, unknown case")
         }
