@@ -1,5 +1,6 @@
 import Foundation
 import CoreBluetooth
+import CoreData
 import os
 
 class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
@@ -20,6 +21,10 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     /// - sending should be done by other app (eg official Dexcom app)
     /// - exception could be sending calibration request or start sensor request, because if user is calibrating or starting the sensor via xDrip4iOS then it would need to be send to the transmitter by xDrip4iOS
     public var useOtherApp = false
+
+    /// Authentication role requested on the next active G6 connection.
+    /// Co-existence mode does not send an authentication request, so this value has no effect there.
+    public var bluetoothSlot: DexcomG6BluetoothSlot
     
     /// is the G6 transmitter Anubis-modified?
     /// use this flag (once set by the TransmitterVersionRxMessage) to enable extra features as needed
@@ -96,6 +101,24 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     
     /// for trace
     private let log = OSLog(subsystem: ConstantsLog.subSystem, category: ConstantsLog.categoryCGMG5)
+
+    // CoreBluetooth callbacks run on bt.central, so keep pending transmitter
+    // calibration data detached from the Calibration managed object.
+    private struct PendingTransmitterCalibration {
+        let id: String
+        let bg: Double
+        let timeStamp: Date
+        let managedObjectContext: NSManagedObjectContext?
+        var sentToTransmitter: Bool
+
+        init(calibration: Calibration) {
+            id = calibration.id
+            bg = calibration.bg
+            timeStamp = calibration.timeStamp
+            managedObjectContext = calibration.managedObjectContext
+            sentToTransmitter = calibration.sentToTransmitter
+        }
+    }
     
     /// is G5 reset necessary or not
     private var G5ResetRequested = false
@@ -127,7 +150,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     
     /// - used to send calibration done by user via xDrip4iOS to Dexcom transmitter. For example, user may have given a calibration in the app, but it's not yet send to the transmitter.
     /// - calibrationToSendToTransmitter.sentToTransmitter says if it's been sent to transmitter or not
-    private var calibrationToSendToTransmitter: Calibration?
+    private var calibrationToSendToTransmitter: PendingTransmitterCalibration?
     
     /// if the user starts the sensor via xDrip4iOS, then only after having receivec a confirmation from the transmitter, then sensorStartDate will be assigned to the actual sensor start date
     /// - if set then call cGMG5TransmitterDelegate.received(sensorStartDate
@@ -145,6 +168,14 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     
     /// to temporary store the received SensorStartDate. Will be compared to sensorStartDate only after having received a glucoseRx message with a valid algorithm status
     private var receivedSensorStartDate: Date?
+
+    /// the start date last reported after a glucose packet confirmed the matching internal session
+    private var reportedConfirmedSensorStartDate: Date?
+
+    /// Core Data snapshot used for the first validated packet because app startup temporarily clears the UserDefaults mirror.
+    private var activeSensorStartDateAtInitialization: Date?
+
+    static let sensorStartDateTolerance: TimeInterval = 15.0
     
     /// - used to send sensor start done by user via xDrip4iOS to Dexcom transmitter. For example, user may have started a sensor in the app, but it's not yet send to the transmitter.
     /// - tuple consisitng of startDate and dexcomCalibrationParameters. If startDate is nil, then there's no start sensor waiting to be sent to the transmitter.
@@ -154,6 +185,10 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     private var dexcomSessionStopTxMessageToSendToTransmitter: DexcomSessionStopTxMessage?
     
     private var timeStampLastConnection = Date(timeIntervalSince1970: 0)
+
+    // Last genuine battery packet for this exact saved Dexcom peripheral.
+    // This keeps request cadence device-local instead of consulting the active-CGM cache.
+    private var batteryLastReadDate: Date?
     
     /// to use in firefly flow, if true, then sensor status is ok, backfill request can be sent
     private var okToRequestBackfill = false
@@ -164,6 +199,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     // Primary-mode guards (reset each connection)
     private var writeControlNotifyConfigured = false
     private var backfillNotifyConfigured = false
+    private var authRequestTxSent = false
     private var authChallengeTxSent = false
 
     // MARK: - public functions
@@ -177,11 +213,13 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     ///     - cGMG5TransmitterDelegate : a CGMG5TransmitterDelegate
     ///     - transmitterStartDate : transmitter start date, optional - actual transmitterStartDate is received from transmitter itself, and stored in coredata. The stored value iss given here as parameter in the initializer. Means  at app start up, it's read from core data and added here as parameter
     ///     - sensorStartDate : should be sensorStartDate of active sensor. If a different sensor start date is received from the transmitter, then we know a new senosr was started
+    ///     - activeSensorStartDate : start date of xDrip's active internal sensor at the time the transmitter is created
     ///     - calibrationToSendToTransmitter : used to send calibration done by user via xDrip4iOS to Dexcom transmitter. For example, user may have give a calibration in the app, but it's not yet send to the transmitter. This needs to be verified in CGMG5Transmitter, which is why it's given here as parameter - when initializing, assign last known calibration for the active sensor, even if it's already sent.
     ///     - webOOPEnabled : enabled or not, if nil then default false
     ///     - userOtherApp
     ///     - isAnubis: true or false. If true then we can take advantage of extra features
-    init(address:String?, name: String?, transmitterID:String, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate, cGMG5TransmitterDelegate: CGMG5TransmitterDelegate, cGMTransmitterDelegate:CGMTransmitterDelegate, transmitterStartDate: Date?, sensorStartDate: Date?, calibrationToSendToTransmitter: Calibration?, firmware: String?, webOOPEnabled: Bool?, useOtherApp: Bool, isAnubis: Bool) {
+    ///     - bluetoothSlot: the role byte to use for G6 authentication
+    init(address:String?, name: String?, transmitterID:String, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate, cGMG5TransmitterDelegate: CGMG5TransmitterDelegate, cGMTransmitterDelegate:CGMTransmitterDelegate, transmitterStartDate: Date?, sensorStartDate: Date?, activeSensorStartDate: Date?, calibrationToSendToTransmitter: Calibration?, firmware: String?, batteryLastReadDate: Date?, webOOPEnabled: Bool?, useOtherApp: Bool, isAnubis: Bool, bluetoothSlot: DexcomG6BluetoothSlot) {
         // assign addressname and name or expected devicename
         var newAddressAndName:BluetoothTransmitter.DeviceAddressAndName = BluetoothTransmitter.DeviceAddressAndName.notYetConnected(expectedName: "DEXCOM" + transmitterID[transmitterID.index(transmitterID.startIndex, offsetBy: 4)..<transmitterID.endIndex])
         if let address = address {
@@ -190,6 +228,9 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         
         // assign useOtherApp
         self.useOtherApp = useOtherApp
+
+        // assign the requested G6 authentication role
+        self.bluetoothSlot = bluetoothSlot
         
         // initialize webOOPEnabled
         self.webOOPEnabled = webOOPEnabled ?? false
@@ -205,15 +246,21 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         
         // initialize firmware
         self.firmware = firmware
+
+        // Restore the per-device battery cadence from Core Data.
+        self.batteryLastReadDate = batteryLastReadDate
         
         // initialize isAnubis
         self.isAnubis = isAnubis
         
         // assign calibrationToSendToTransmitter
-        self.calibrationToSendToTransmitter = calibrationToSendToTransmitter
+        self.calibrationToSendToTransmitter = calibrationToSendToTransmitter.map(PendingTransmitterCalibration.init)
         
         // assign sensorStartDate
         self.sensorStartDate = sensorStartDate
+
+        // Preserve the Core Data state until the first validated Dexcom packet is reconciled.
+        self.activeSensorStartDateAtInitialization = activeSensorStartDate
         
         // initialize - CBUUID_Receive_Authentication.rawValue and CBUUID_Write_Control.rawValue will probably not be used in the superclass
         super.init(addressAndName: newAddressAndName, CBUUID_Advertisement: CBUUID_Advertisement_G5, servicesCBUUIDs: [CBUUID(string: CBUUID_Service_G5)], CBUUID_ReceiveCharacteristic: CBUUID_Characteristic_UUID.CBUUID_Receive_Authentication.rawValue, CBUUID_WriteCharacteristic: CBUUID_Characteristic_UUID.CBUUID_Write_Control.rawValue, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate)
@@ -315,14 +362,11 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     }
 
     override func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
-        // Coexistence: tiny debounce; Primary: forward immediately.
-        if useOtherApp {
-            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2.0) { [weak self] in
-                self?.delayedSuperDidDisconnect(central: central, peripheral: peripheral, error: error)
-            }
-        } else {
-            super.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
-        }
+        // Let the base BLE path arm the next connection first. In co-existence
+        // background wakes, current glucose is already published as soon as the
+        // frame is received, and delaying reconnect bookkeeping here can let iOS
+        // suspend before the next BLE connection is requested.
+        super.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
         
         if waitingPairingConfirmation {
             // device has requested a pairing request and is now in a status of verifying if pairing was successfull or not, this by doing setNotify to writeCharacteristic. If a disconnect occurs now, it means pairing has failed (probably because user didn't approve it
@@ -344,6 +388,63 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         
     }
 
+    /// Co-existence reconnects after the LoopKit-style 2 second delay.
+    override func reconnectAfterDisconnect(_ central: CBCentralManager) {
+        if useOtherApp {
+            // Stay inside the CoreBluetooth wake while delaying, then issue
+            // the reconnect directly on bt.central. Calling connect() here
+            // only enqueues the real CoreBluetooth command, which can be lost
+            // if iOS suspends us as soon as the disconnect callback returns.
+            Thread.sleep(forTimeInterval: 2.0)
+            super.reconnectAfterDisconnect(central)
+            return
+        }
+
+        super.reconnectAfterDisconnect(central)
+    }
+
+    /// Passive sessions must reach service discovery quickly. This matches the
+    /// timed setup step LoopKit applies around service discovery.
+    override func shouldTimeoutStalledConnectionSetup() -> Bool {
+        useOtherApp
+    }
+
+    /// A brand-new co-existence connection does not yet have the exact Core Bluetooth identifier
+    /// that normal G6 reconnects use. Duplicate advertisements keep the initial scan informed while
+    /// the primary app establishes the shared system connection. Primary mode and every already
+    /// bound G6 continue using the normal de-duplicated scan.
+    override func scanOptions() -> [String: Any]? {
+        useOtherApp && deviceAddress == nil
+            ? [CBCentralManagerScanOptionAllowDuplicatesKey: true]
+            : nil
+    }
+
+    /// Co-existence must subscribe during the current Bluetooth callback so it does not miss
+    /// the short authentication and control notification windows opened by the primary app.
+    override func shouldSetNotifyValueInline() -> Bool {
+        useOtherApp
+    }
+
+    /// Failed passive connects restart scanning with the same delayed policy as
+    /// passive disconnects. Active mode keeps the generic failure handling.
+    override func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        if useOtherApp {
+            cancelConnectionTimer()
+
+            if let error = error {
+                trace("in didFailToConnect, coexistence failed to connect with error: %{public}@, will restart scan after passive-mode delay", log: log, category: ConstantsLog.categoryCGMG5, type: .error, error.localizedDescription)
+            } else {
+                trace("in didFailToConnect, coexistence failed to connect, will restart scan after passive-mode delay", log: log, category: ConstantsLog.categoryCGMG5, type: .error)
+            }
+
+            Thread.sleep(forTimeInterval: 2.0)
+            stopConnectAndRestartScanning(forgetDeviceOnTimeout: false)
+            return
+        }
+
+        super.centralManager(central, didFailToConnect: peripheral, error: error)
+    }
+
     override func peripheral(_ peripheral: CBPeripheral, didUpdateNotificationStateFor characteristic: CBCharacteristic, error: Error?) {
         super.peripheral(peripheral, didUpdateNotificationStateFor: characteristic, error: error)
         
@@ -355,21 +456,44 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         if let error = error {
             trace("in didUpdateNotificationStateFor characteristic, error: %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .error , error.localizedDescription)
         }
-        
+
         if let characteristicValue = CBUUID_Characteristic_UUID(rawValue: characteristic.uuid.uuidString) {
             trace("in didUpdateNotificationStateFor characteristic, characteristic : %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .debug, characteristicValue.description)
             
             switch characteristicValue {
             case .CBUUID_Receive_Authentication:
+                // Passive co-existence observes authentication but does not
+                // drive the active Dexcom command flow.
+                if useOtherApp {
+                    // Service discovery is not enough to consider passive setup
+                    // complete. Keep the setup timeout alive until CoreBluetooth
+                    // confirms the authentication notification subscription.
+                    if characteristic.isNotifying {
+                        cancelConnectionSetupTimeout()
+                    }
+                    return
+                }
                 sendAuthRequestTxMessage()
                 break
                 
             case .CBUUID_Backfill:
+                // Store the real notify state from CoreBluetooth. Do not assume
+                // success immediately after calling setNotifyValue().
+                if useOtherApp {
+                    backfillNotifyConfigured = characteristic.isNotifying
+                    return
+                }
                 // ensure we stay subscribed to Backfill. Retry once if needed
                 if !characteristic.isNotifying { setNotifyValue(true, for: characteristic) } // keep notify on
                 break
 
             case .CBUUID_Write_Control:
+                // Store the real notify state from CoreBluetooth. Do not assume
+                // success immediately after calling setNotifyValue().
+                if useOtherApp {
+                    writeControlNotifyConfigured = characteristic.isNotifying
+                    return
+                }
                 // ensure we stay subscribed to Write_Control. Retry once if needed
                 if !characteristic.isNotifying { setNotifyValue(true, for: characteristic) } // keep notify on
                 
@@ -435,6 +559,24 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                         switch opCode {
                         case .authChallengeRx:
                             if let authChallengeRxMessage = AuthChallengeRxMessage(data: value) {
+                                if useOtherApp {
+                                    // Match LoopKit passive mode: only observe sessions that the Dexcom app has
+                                    // already authenticated, then subscribe to control notifications. Do not bond,
+                                    // answer auth, or subscribe to backfill from the authentication callback.
+                                    guard authChallengeRxMessage.paired, authChallengeRxMessage.authenticated else {
+                                        trace("in didUpdateValueFor characteristic, authChallengeRx, coexistence mode ignoring non-authenticated auth response", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                        return
+                                    }
+
+                                    if let writeControlCharacteristic = writeControlCharacteristic, !writeControlNotifyConfigured {
+                                        trace("in didUpdateValueFor characteristic, authChallengeRx, coexistence mode authenticated session observed, will set notifyValue for writeControlCharacteristic to true", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                        setNotifyValue(true, for: writeControlCharacteristic)
+                                    } else if writeControlCharacteristic == nil {
+                                        trace("in didUpdateValueFor characteristic, authChallengeRx, coexistence mode writeControlCharacteristic is nil, can not set notifyValue", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                    }
+                                    return
+                                }
+
                                 // if not paired, then send message to delegate
                                 if !authChallengeRxMessage.paired {
                                     trace("in didUpdateValueFor characteristic, authChallengeRx, transmitter needs pairing, calling sendKeepAliveMessage", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
@@ -471,7 +613,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                             }
                             
                         case .authRequestRx:
-                            // In coexistence, do not participate in the authentication handshake; remain passive so the transmitter drops us quickly.
+                            // In coexistence, do not participate in the authentication handshake. Remain passive so the transmitter drops us quickly.
                             if useOtherApp {
                                 trace("in didUpdateValueFor characteristic, authRequestRx, coexistence mode, remaining passive (no AuthChallengeTx).", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
                                 return
@@ -501,6 +643,13 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                             }
                             
                         case .sensorDataRx:
+                            // Passive co-existence should not process active-mode
+                            // sensor responses or complete pairing flows.
+                            if useOtherApp {
+                                trace("in didUpdateValueFor characteristic, sensorDataRx, coexistence mode ignoring active-mode sensor data response", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                return
+                            }
+
                             // if this is the first sensorDataRx after a successful pairing, then inform delegate that pairing is finished
                             if waitingPairingConfirmation {
                                 waitingPairingConfirmation = false
@@ -538,7 +687,9 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                                         trace("in didUpdateValueFor characteristic, sensorDataRx, received unfiltered value 2096896.0, which is caused by low battery. Creating error message", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
                                         
                                         DispatchQueue.main.async { [weak self] in
-                                            self?.cgmTransmitterDelegate?.errorOccurred(xDripError: DexcomError.receivedEnfilteredValue2096896)
+                                            self?.cgmTransmitterDelegate?.sensorHealthEventOccurred(
+                                                .terminal(source: .dexcom, reason: .dexcomTransmitterBatteryFailure)
+                                            )
                                         }
                                     } else {
                                         timeStampOfLastG5Reading = Date()
@@ -564,18 +715,25 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                         case .batteryStatusRx:
                             processBatteryStatusRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         case .transmitterVersionRx:
                             processTransmitterVersionRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
 
                         case .keepAliveRx:
                             // seems no processing is necessary, now the user should get a pairing requeset
                             break
                             
                         case .pairRequestRx:
+                            // The primary app owns pairing in co-existence mode.
+                            // xDrip should not respond to this active-mode path.
+                            if useOtherApp {
+                                trace("in didUpdateValueFor characteristic, pairRequestRx, coexistence mode ignoring active pairing response", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                return
+                            }
+
                             // don't know if the user accepted the pairing request or not, we can only know by trying to subscribe to writeControlCharacteristic - if the device is paired, we'll receive a sensorDataRx message, if not paired, then a disconnect will happen
                             
                             // set status to waitingForPairingConfirmation
@@ -591,38 +749,58 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                         case .transmitterTimeRx:
                             processTransmitterTimeRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         case .glucoseBackfillRx:
                             processGlucoseBackfillRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if useOtherApp {
+                                trace("in didUpdateValueFor characteristic, glucoseBackfillRx, coexistence mode will flush observed backfill on disconnect", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                            } else if useFireFlyFlow() {
+                                fireflyMessageFlow()
+                            }
 
                         case .glucoseRx:
                             processGlucoseDataRxMessage(value: value)
+                            if useOtherApp,
+                               let backfillCharacteristic = backfillCharacteristic,
+                               !backfillNotifyConfigured {
+                                // LoopKit passive mode subscribes to backfill only after an
+                                // observed glucose control response.
+                                trace("in didUpdateValueFor characteristic, glucoseRx, coexistence mode will set notifyValue for backfillCharacteristic to true", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                setNotifyValue(true, for: backfillCharacteristic)
+                            }
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         case .glucoseG6Rx:
                             // received when relying on official Dexcom app, ie in mode useOtherApp = true
                             processGlucoseG6DataRxMessage(value: value)
+                            if useOtherApp,
+                               let backfillCharacteristic = backfillCharacteristic,
+                               !backfillNotifyConfigured {
+                                // LoopKit passive mode subscribes to backfill only after an
+                                // observed glucose control response.
+                                trace("in didUpdateValueFor characteristic, glucoseG6Rx, coexistence mode will set notifyValue for backfillCharacteristic to true", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+                                setNotifyValue(true, for: backfillCharacteristic)
+                            }
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         case .calibrateGlucoseRx:
                             processCalibrateGlucoseRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         case .sessionStopRx:
                             processSessionStopRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
 
                         case .sessionStartRx:
                             processSessionStartRxMessage(value: value)
                             // if firefly continue with the firefly message flow
-                            if useFireFlyFlow() { fireflyMessageFlow() }
+                            if !useOtherApp && useFireFlyFlow() { fireflyMessageFlow() }
                             
                         default:
                             trace("in didUpdateValueFor characteristic, unknown opcode received ", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
@@ -641,7 +819,30 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     
     override func centralManager(_ central: CBCentralManager, didDiscover peripheral: CBPeripheral, advertisementData: [String : Any], rssi RSSI: NSNumber) {
         if useOtherApp {
-            trace("in didDiscover peripheral, useOtherApp = true, no further processing", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
+            // A normal co-existence reconnect uses the exact Core Bluetooth address that was saved
+            // after the first successful connection. The superclass enforces that address match and
+            // ignores every other peripheral advertising the same Dexcom service.
+            //
+            // Initial co-existence onboarding is different because an address cannot exist until a
+            // peripheral has been found for the first time. In this case the superclass uses the
+            // expected Dexcom name derived from the entered transmitter ID. This gives us the same
+            // precise first-device selection used by primary mode without starting primary
+            // authentication. stopScanAndconnect stores the selected address before didConnect, so
+            // the strict address check in didConnect remains effective from that point onwards.
+            if deviceAddress == nil {
+                trace("in didDiscover peripheral, initial co-existence connection has no bound device address, will evaluate the result against the entered transmitter ID", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
+
+                // The advertisement can arrive just before the primary app completes its connection.
+                // Ask Core Bluetooth whether that shared connection is now available before opening
+                // another connection ourselves. The strict lookup only accepts the Bluetooth name
+                // derived from the entered transmitter ID.
+                if retrieveConnectedPeripheral(withServiceUUIDs: [CBUUID(string: CBUUID_Service_G5)], allowFallback: false) {
+                    trace("in didDiscover peripheral, initial co-existence attached to the expected system connection", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
+                    return
+                }
+            }
+
+            super.centralManager(central, didDiscover: peripheral, advertisementData: advertisementData, rssi: RSSI)
             return
         }
 
@@ -653,10 +854,47 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         }
     }
 
+    override func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        // Let the common Bluetooth state handler update the UI and reconnect a previously bound
+        // peripheral before we handle the special case where initial co-existence onboarding does
+        // not yet have a saved Core Bluetooth identifier.
+        super.centralManagerDidUpdateState(central)
+
+        // Direct initial co-existence is different from the historic G6 flow. Previously the app
+        // first connected in primary mode, which saved the exact Core Bluetooth identifier before
+        // the user could change to co-existence. A new co-existence connection only has the entered
+        // transmitter ID and its derived Dexcom name.
+        //
+        // The primary app may already have established the shared system connection before our
+        // central manager becomes ready. Check for that connection once before normal scanning
+        // continues. Duplicate scan results provide the later checks while onboarding remains open.
+        if useOtherApp, deviceAddress == nil, central.state == .poweredOn {
+            let serviceUUID = CBUUID(string: CBUUID_Service_G5)
+
+            // The fallback is deliberately disabled because another nearby G5 or G6 may expose the
+            // same service. Only the Bluetooth name derived from the entered transmitter ID is safe.
+            if retrieveConnectedPeripheral(withServiceUUIDs: [serviceUUID], allowFallback: false) {
+                trace("in centralManagerDidUpdateState, initial co-existence attached to the existing system connection", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
+            }
+        }
+    }
+
     override func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
+        if useOtherApp {
+            // Protect CoreBluetooth restoration/retrieve paths too: a restored
+            // peripheral must still be the exact bound UUID for this CGM.
+            guard let deviceAddress = deviceAddress, peripheral.identifier.uuidString == deviceAddress else {
+                trace("in didConnect, co-existence rejecting peripheral %{public}@ because it does not match the bound device address", log: log, category: ConstantsLog.categoryCGMG5, type: .error, peripheral.name ?? "'unknown'")
+                cancelConnectionTimer()
+                disconnect()
+                _ = startScanning()
+                return
+            }
+        }
+
         // calling super.didConnect here to keep base setup (service discovery, timers, etc.)
         
-        // No predictive/quiet-window gating — keep it simple and reliable.
+        // No predictive/quiet-window gating: keep it simple and reliable.
         super.centralManager(central, didConnect: peripheral)
         
         timeStampLastConnection = Date()
@@ -667,7 +905,38 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         // reset per-connection guards
         writeControlNotifyConfigured = false
         backfillNotifyConfigured = false
+        authRequestTxSent = false
         authChallengeTxSent = false
+    }
+
+    /// Passive co-existence discovers only the characteristics needed to observe
+    /// authentication and backfill. Active mode uses the normal full discovery.
+    override func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
+        guard useOtherApp else {
+            super.peripheral(peripheral, didDiscoverServices: error)
+            return
+        }
+
+        if let error = error {
+            trace("in didDiscoverServices, co-existence error: %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .error, error.localizedDescription)
+        }
+
+        guard let services = peripheral.services else {
+            disconnect()
+            return
+        }
+
+        let dexcomCharacteristics = [
+            CBUUID(string: CBUUID_Characteristic_UUID.CBUUID_Communication.rawValue),
+            CBUUID(string: CBUUID_Characteristic_UUID.CBUUID_Receive_Authentication.rawValue),
+            CBUUID(string: CBUUID_Characteristic_UUID.CBUUID_Write_Control.rawValue),
+            CBUUID(string: CBUUID_Characteristic_UUID.CBUUID_Backfill.rawValue)
+        ]
+
+        for service in services where service.uuid == CBUUID(string: CBUUID_Service_G5) {
+            trace("in didDiscoverServices, co-existence will discover exact Dexcom characteristics for service %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .debug, service.uuid.uuidString)
+            peripheral.discoverCharacteristics(dexcomCharacteristics, for: service)
+        }
     }
     
     override func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
@@ -675,7 +944,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         if let error = error {
             trace("in didDiscoverCharacteristicsFor, error: %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .error , error.localizedDescription)
         }
-        
+
         if let characteristics = service.characteristics {
             
             for characteristic in characteristics {
@@ -836,8 +1105,10 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         // set calibrationToSendToTransmitter to nil, because a new calibration needs to be sent
         calibrationToSendToTransmitter = nil
         
-        if calibrationIsValid(calibration: calibration) {
-            calibrationToSendToTransmitter = calibration
+        let pendingCalibration = PendingTransmitterCalibration(calibration: calibration)
+
+        if calibrationIsValid(calibration: pendingCalibration) {
+            calibrationToSendToTransmitter = pendingCalibration
             
             trace("in calibrate., new calibration stored, value = %{public}@, timestamp = %{public}@ ", log: log, category: ConstantsLog.categoryCGMG5, type: .info, calibration.bg.description, calibration.timeStamp.toStringForTrace(timeStyle: .long, dateStyle: .none))
         }
@@ -851,6 +1122,12 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         return !transmitterId.isFireFly()
     }
     
+    func shouldWarnOnLargeCalibrationStep() -> Bool {
+        // G5 and G6 share this transmitter class. The large-step warning is only
+        // meant for the G6/ONE path for now, which we already identify as firefly.
+        return transmitterId.isFireFly()
+    }
+
     func getCBUUID_Service() -> String {
         return CBUUID_Service_G5
     }
@@ -930,7 +1207,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     }
     
     /// sends calibrationTxMessage. Will use super.writeDataToPeripheral, meaning, even if useOtherApp = true, then still it will send the data to the transmitter
-    private func sendCalibrationTxMessage(calibration: Calibration, transmitterStartDate: Date) {
+    private func sendCalibrationTxMessage(calibration: PendingTransmitterCalibration, transmitterStartDate: Date) {
         
         let calibrationTxMessage = DexcomCalibrationTxMessage(glucose: Int(calibration.bg), timeStamp: calibration.timeStamp, transmitterStartDate: transmitterStartDate)
         
@@ -941,7 +1218,8 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             _ = super.writeDataToPeripheral(data: calibrationTxMessage.data, characteristicToWriteTo: writeControlCharacteristic, type: .withResponse)
             
             // set sentToTransmitter to true
-            calibration.sentToTransmitter = true
+            calibrationToSendToTransmitter?.sentToTransmitter = true
+            updateCalibrationTransmitterStatus(calibration: calibration, sentToTransmitter: true)
             
         } else {
             
@@ -1016,14 +1294,25 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             trace("in sendAuthRequestTxMessage, use other app/coexistence: suppress authRequestTx", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
             return
         }
+
+        // CoreBluetooth can report the authentication notification state more than once for the
+        // same connection. A second AuthRequestTx creates a new transmitter challenge and
+        // invalidates the first one before its AuthChallengeTx response arrives, producing
+        // 050201 and losing that glucose cycle. Send exactly one request per connection.
+        guard !authRequestTxSent else {
+            trace("in sendAuthRequestTxMessage, auth request already sent for this connection, ignoring duplicate notification callback", log: log, category: ConstantsLog.categoryCGMG5, type: .debug)
+            return
+        }
         
-        let authMessage = AuthRequestTxMessage()
+        let authMessage = AuthRequestTxMessage(slot: bluetoothSlot)
         
         if let receiveAuthenticationCharacteristic = receiveAuthenticationCharacteristic {
 
             trace("in sendAuthRequestTxMessage, sending authMessage with data %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .debug, authMessage.data.hexEncodedString())
 
-            _ = writeDataToPeripheral(data: authMessage.data, characteristicToWriteTo: receiveAuthenticationCharacteristic, type: .withResponse)
+            if writeDataToPeripheral(data: authMessage.data, characteristicToWriteTo: receiveAuthenticationCharacteristic, type: .withResponse) {
+                authRequestTxSent = true
+            }
             
         } else {
             
@@ -1050,11 +1339,6 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
 
     }
     
-    /// Helper to allow calling super.didDisconnectPeripheral from a delayed closure
-    private func delayedSuperDidDisconnect(central: CBCentralManager, peripheral: CBPeripheral, error: Error?) {
-        super.centralManager(central, didDisconnectPeripheral: peripheral, error: error)
-    }
-
     private func processResetRxMessage(value:Data) {
         
         if let resetRxMessage = ResetRxMessage(data: value) {
@@ -1082,11 +1366,24 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             trace("in processBatteryStatusRxMessage, voltageA = %{public}@, voltageB = %{public}@, resist = %{public}@, runtime = %{public}@, temperature = %{public}@, status = %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .info, batteryStatusRxMessage.voltageA.description, batteryStatusRxMessage.voltageB.description, batteryStatusRxMessage.resist.description, batteryStatusRxMessage.runtime.description, batteryStatusRxMessage.temperature.description, batteryStatusRxMessage.status.description)
 
             // possibly other app is running in parallel and also requested battery info, in that case don't store it again
-            if Date() > Date(timeInterval: ConstantsDexcomG5.batteryReadPeriod, since: UserDefaults.standard.timeStampOfLastBatteryReading != nil ? UserDefaults.standard.timeStampOfLastBatteryReading! : Date(timeIntervalSince1970: 0)) {
+            let timeStampOfLastBatteryReading = batteryLastReadDate ?? Date(timeIntervalSince1970: 0)
+            if Date() > Date(timeInterval: ConstantsDexcomG5.batteryReadPeriod, since: timeStampOfLastBatteryReading) {
+
+                batteryLastReadDate = Date()
 
                 DispatchQueue.main.async { [weak self] in
                     guard let self = self else { return }
-                    let batteryInfo = TransmitterBatteryInfo.DexcomG5(voltageA: batteryStatusRxMessage.voltageA, voltageB: batteryStatusRxMessage.voltageB, resist: batteryStatusRxMessage.resist, runtime: batteryStatusRxMessage.runtime, temperature: batteryStatusRxMessage.temperature)
+                    // G5, G6 and ONE share the established long-life transmitter battery limits.
+                    // Carry that family with the saved measurement so downstream alerts cannot
+                    // accidentally interpret these voltages as disposable G7-family values.
+                    let batteryInfo = TransmitterBatteryInfo.dexcom(
+                        family: .g5,
+                        voltageA: batteryStatusRxMessage.voltageA,
+                        voltageB: batteryStatusRxMessage.voltageB,
+                        resist: batteryStatusRxMessage.resist,
+                        runtime: batteryStatusRxMessage.runtime,
+                        temperature: batteryStatusRxMessage.temperature
+                    )
                     self.cGMG5TransmitterDelegate?.received(transmitterBatteryInfo: batteryInfo, cGMG5Transmitter: self)
                     var empty: [GlucoseData] = []
                     self.cgmTransmitterDelegate?.cgmTransmitterInfoReceived(glucoseData: &empty, transmitterBatteryInfo: batteryInfo, sensorAge: nil)
@@ -1148,6 +1445,13 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
                 self.cGMG5TransmitterDelegate?.received(sensorStatus: dexcomSessionStartRxMessage.sessionStartResponse.description, cGMG5Transmitter: self)
+                self.cgmTransmitterDelegate?.sensorSessionStartResultReceived(
+                    CGMSensorSessionStartResult(
+                        response: dexcomSessionStartRxMessage.sessionStartResponse,
+                        requestedStartDate: dexcomSessionStartRxMessage.requestedStartDate,
+                        sessionStartDate: dexcomSessionStartRxMessage.sessionStartDate
+                    )
+                )
             }
             
         } else {
@@ -1175,7 +1479,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             if let calibrationToSendToTransmitter = calibrationToSendToTransmitter {
                 
                 // assumption is that the stored calibration is the one for which we receive this dexcomCalibrationRxMessage
-                calibrationToSendToTransmitter.acceptedByTransmitter = dexcomCalibrationRxMessage.accepted
+                updateCalibrationTransmitterStatus(calibration: calibrationToSendToTransmitter, acceptedByTransmitter: dexcomCalibrationRxMessage.accepted)
                 
                 // set calibrationToSendToTransmitter to nil so it's not processed next run
                 self.calibrationToSendToTransmitter = nil
@@ -1202,7 +1506,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
 
     /// - used by processGlucoseDataRxMessage and processGlucoseG6DataRxMessage
     /// - verifies the algorithmStatus and if ok, creates lastGlucoseInSensorDataRxReading
-    /// - parameters;
+    /// - parameters:
     ///     - calculatedValue : the value in the reading
     ///     - algorithmStatus : algorithm status
     ///     - timeStamp : timestamp in the reading
@@ -1214,6 +1518,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         DispatchQueue.main.async { [weak self] in
             guard let self = self else { return }
             self.cGMG5TransmitterDelegate?.received(sensorStatus: algorithmStatus.description, cGMG5Transmitter: self)
+            self.cgmTransmitterDelegate?.sensorHealthEventOccurred(algorithmStatus.sensorHealthEvent)
         }
 
         switch algorithmStatus {
@@ -1221,62 +1526,113 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             lastGlucoseInSensorDataRxReading = GlucoseData(timeStamp: timeStamp, glucoseLevelRaw: calculatedValue)
             okToRequestBackfill = true
             glucoseTxSent = true
-            var forceNewSensor = false
-            if let sensorStartDate = self.sensorStartDate, let activeSensorStartDate = UserDefaults.standard.activeSensorStartDate, activeSensorStartDate < sensorStartDate.addingTimeInterval(-15.0) || activeSensorStartDate > sensorStartDate.addingTimeInterval(15.0) {
-                forceNewSensor = true
-            }
-            if let receivedSensorStartDate = receivedSensorStartDate {
-                if forceNewSensor || sensorStartDate == nil || (sensorStartDate! < receivedSensorStartDate.addingTimeInterval(-15.0)) {
-                    if let sensorStartDate = sensorStartDate {
-                        trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, currently known sensorStartDate = %{public}@.", log: log, category: ConstantsLog.categoryCGMG5, type: .info, sensorStartDate.toStringForTrace(timeStyle: .long, dateStyle: .long))
-                    } else {
-                        trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, current sensorStartDate is nil", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
-                    }
-                    trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, received sensorStartDate minus 15 seconds = %{public}@.", log: log, category: ConstantsLog.categoryCGMG5, type: .info, receivedSensorStartDate.addingTimeInterval(-15.0).toStringForTrace(timeStyle: .long, dateStyle: .long))
-                    trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, seems that a new sensor is detected.", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
-                    self.receivedSensorStartDate = receivedSensorStartDate
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.cgmTransmitterDelegate?.newSensorDetected(sensorStartDate: receivedSensorStartDate)
-                    }
-                }
-                sensorStartDate = receivedSensorStartDate
-            }
         case .SensorWarmup, .SessionStopped:
             lastGlucoseInSensorDataRxReading = nil
             if algorithmStatus == .SessionStopped {
+                reportedConfirmedSensorStartDate = nil
                 DispatchQueue.main.async { [weak self] in
                     self?.cgmTransmitterDelegate?.sensorStopDetected()
                 }
                 sensorStartDate = nil
-            } else if let receivedSensorStartDate = receivedSensorStartDate {
-                var forceNewSensor = false
-                if let sensorStartDate = self.sensorStartDate, let activeSensorStartDate = UserDefaults.standard.activeSensorStartDate, activeSensorStartDate < sensorStartDate.addingTimeInterval(-15.0) || activeSensorStartDate > sensorStartDate.addingTimeInterval(15.0) {
-                    forceNewSensor = true
-                }
-                if forceNewSensor || sensorStartDate == nil || (sensorStartDate! < receivedSensorStartDate.addingTimeInterval(-15.0)) {
-                    if let sensorStartDate = sensorStartDate {
-                        trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, currently known sensorStartDate = %{public}@.", log: log, category: ConstantsLog.categoryCGMG5, type: .info, sensorStartDate.toStringForTrace(timeStyle: .long, dateStyle: .long))
-                    } else {
-                        trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, current sensorStartDate is nil", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
-                    }
-                    trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, received sensorStartDate minus 15 seconds = %{public}@.", log: log, category: ConstantsLog.categoryCGMG5, type: .info, receivedSensorStartDate.addingTimeInterval(-15.0).toStringForTrace(timeStyle: .long, dateStyle: .long))
-                    trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, seems a new sensor is detected.", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
-                    self.receivedSensorStartDate = receivedSensorStartDate
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        self.cgmTransmitterDelegate?.newSensorDetected(sensorStartDate: receivedSensorStartDate)
-                    }
-                }
-                sensorStartDate = receivedSensorStartDate
             }
         default:
             trace("in processGlucoseG6DataRxMessageOrGlucoseDataRxMessage, algorithm state is %{public}@ so will not create lastGlucoseInSensorDataRxReading", log: log, category: ConstantsLog.categoryCGMG5, type: .info, algorithmStatus.description)
             lastGlucoseInSensorDataRxReading = nil
         }
+
+        // Primary mode normally receives the transmitter time before the glucose packet, so the
+        // sensor start date is already available here. An initial co-existence connection can join
+        // the official app's existing exchange after that point and receive glucose first. Always
+        // check whether both parts are now available instead of relying on either packet arriving
+        // in a particular order.
+        reconcileInternalSensorSessionIfConfirmed()
         
         // don't send reading to delegate, will be done when transmitter disconnects, then we're sure we also received al necessary backfill data
 
+    }
+
+    /// Reconciles the internal Sensor only after Dexcom has supplied both the session date and a status which confirms that session is running.
+    private func reconcileInternalSensorSessionIfConfirmed() {
+        guard let receivedSensorStartDate, let lastAlgorithmStatus else { return }
+
+        // Glucose, warm-up and initial-calibration states confirm a real running session.
+        // A no-code session needs an internal Sensor before it can accept its first calibration.
+        // Other states must not start an internal xDrip4iOS Sensor. In particular,
+        // SessionStopped can still be followed by a transmitter time response containing an old
+        // start date which must not be adopted again.
+        switch lastAlgorithmStatus {
+        case .okay, .needsCalibration, .SensorWarmup, .FirstofTwoBGsNeeded, .SecondofTwoBGsNeeded:
+            reconcileInternalSensorSession(with: receivedSensorStartDate)
+        default:
+            break
+        }
+
+        // Queue after session reconciliation so calibration entry belongs to the actual session,
+        // including when `0000` was only used to adopt a sensor already running on the transmitter.
+        guard transmitterId.isFireFly() else { return }
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            self.cgmTransmitterDelegate?.dexcomG6CalibrationStateReceived(
+                lastAlgorithmStatus, sensorStartDate: receivedSensorStartDate, from: self
+            )
+        }
+    }
+
+    /// Reconciles the Dexcom session with xDrip's internal Sensor after a glucose packet confirms an active or warming-up session.
+    private func reconcileInternalSensorSession(with receivedSensorStartDate: Date) {
+        // The persisted transmitter date can survive a deliberate disconnect, while xDrip's internal
+        // Sensor is stopped. The active internal date is therefore the source of truth for deciding
+        // whether the existing newSensorDetected workflow must recreate the local session.
+        let activeSensorStartDate = UserDefaults.standard.activeSensorStartDate ?? activeSensorStartDateAtInitialization
+        activeSensorStartDateAtInitialization = nil
+
+        if Self.shouldReportDetectedSensor(
+            activeSensorStartDate: activeSensorStartDate,
+            receivedSensorStartDate: receivedSensorStartDate
+        ) {
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+
+                // Several Bluetooth packets can be processed before the first queued delegate call
+                // creates the internal Sensor. Re-read the main-thread-owned mirror here so only the
+                // first queued callback reports the session. Unlike a transmitter-lifetime suppression
+                // flag, this still allows recovery if the user later stops the internal Sensor while
+                // the same transmitter session remains active.
+                guard Self.shouldReportDetectedSensor(
+                    activeSensorStartDate: UserDefaults.standard.activeSensorStartDate,
+                    receivedSensorStartDate: receivedSensorStartDate
+                ) else { return }
+
+                trace("in reconcileInternalSensorSession, received Dexcom sensor session is missing or different in xDrip, reporting it as detected", log: self.log, category: ConstantsLog.categoryCGMG5, type: .info)
+                self.cgmTransmitterDelegate?.newSensorDetected(sensorStartDate: receivedSensorStartDate)
+            }
+        } else if Self.shouldReportConfirmedSensorSession(
+            reportedSensorStartDate: reportedConfirmedSensorStartDate,
+            receivedSensorStartDate: receivedSensorStartDate
+        ) {
+            reportedConfirmedSensorStartDate = receivedSensorStartDate
+
+            DispatchQueue.main.async { [weak self] in
+                guard let self = self else { return }
+
+                trace("in reconcileInternalSensorSession, validated Dexcom glucose data confirms the matching internal sensor session", log: self.log, category: ConstantsLog.categoryCGMG5, type: .info)
+                self.cgmTransmitterDelegate?.sensorSessionConfirmed(startDate: receivedSensorStartDate)
+            }
+        }
+
+        sensorStartDate = receivedSensorStartDate
+    }
+
+    static func shouldReportDetectedSensor(activeSensorStartDate: Date?, receivedSensorStartDate: Date) -> Bool {
+        guard let activeSensorStartDate else { return true }
+
+        return abs(activeSensorStartDate.timeIntervalSince(receivedSensorStartDate)) > sensorStartDateTolerance
+    }
+
+    static func shouldReportConfirmedSensorSession(reportedSensorStartDate: Date?, receivedSensorStartDate: Date) -> Bool {
+        guard let reportedSensorStartDate else { return true }
+
+        return abs(reportedSensorStartDate.timeIntervalSince(receivedSensorStartDate)) > sensorStartDateTolerance
     }
     
 
@@ -1288,6 +1644,10 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             trace("in processGlucoseDataRxMessage, received glucoseDataRxMessage, value = %{public}@, algorithm status = %{public}@, transmitter status = %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .info, glucoseDataRxMessage.calculatedValue.description, glucoseDataRxMessage.algorithmStatus.description, glucoseDataRxMessage.transmitterStatus.description)
             
             processGlucoseG6DataRxMessageOrGlucoseDataRxMessage(calculatedValue: glucoseDataRxMessage.calculatedValue, algorithmStatus: glucoseDataRxMessage.algorithmStatus, timeStamp: Date())
+
+            if useOtherApp {
+                publishCoexistenceGlucoseIfSessionKnown()
+            }
             
         } else {
             
@@ -1330,40 +1690,57 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             timeStamp: glucoseDataRxMessage.timeStamp
         )
 
-        // In coexistence with the official Dexcom app, act as a simple, passive listener:
-        // as soon as we get a valid G6 glucose frame, publish it directly to the delegate.
+        // Co-existence normally publishes the observed glucose frame immediately. During the first
+        // connection it may arrive before the transmitter time response, so the shared publishing
+        // helper retains it until the running session has also been identified.
         if useOtherApp {
-            // Only send if status is .okay or .needsCalibration
-            if glucoseDataRxMessage.algorithmStatus == .okay || glucoseDataRxMessage.algorithmStatus == .needsCalibration {
-                guard let latestReading = lastGlucoseInSensorDataRxReading else {
-                    // Should not normally happen, but if it does, fall back to a direct GlucoseData.
-                    let fallback = GlucoseData(timeStamp: glucoseDataRxMessage.timeStamp, glucoseLevelRaw: glucoseDataRxMessage.calculatedValue)
-                    timeStampOfLastG5Reading = fallback.timeStamp
-                    DispatchQueue.main.async { [weak self] in
-                        guard let self = self else { return }
-                        var copy = [fallback]
-                        self.cgmTransmitterDelegate?.cgmTransmitterInfoReceived(glucoseData: &copy, transmitterBatteryInfo: nil, sensorAge: nil)
-                    }
-                    return
-                }
-                timeStampOfLastG5Reading = latestReading.timeStamp
-                DispatchQueue.main.async { [weak self] in
-                    guard let self = self else { return }
-                    var copy = [latestReading]
-                    self.cgmTransmitterDelegate?.cgmTransmitterInfoReceived(glucoseData: &copy, transmitterBatteryInfo: nil, sensorAge: nil)
-                }
-            } else {
-                trace("in processGlucoseG6DataRxMessage, not sending glucose value due to algorithm status: %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .info, glucoseDataRxMessage.algorithmStatus.description)
+            if let latestReading = lastGlucoseInSensorDataRxReading {
+                latestReading.backfilledAt = delayedBackfilledAt(for: latestReading.timeStamp)
             }
-            // In coexistence mode we do not rely on sendGlucoseDataToDelegate() or backfill
-            // to deliver readings, we are intentionally "dumb" and fire once per G6 frame.
+            publishCoexistenceGlucoseIfSessionKnown()
             return
         }
 
         // Primary / non-coexistence mode: keep the existing behaviour.
         // The reading will be delivered later as part of sendGlucoseDataToDelegate().
     }
-    
+
+    /// Publishes a passive glucose reading once the current transmitter instance has identified the running sensor session.
+    private func publishCoexistenceGlucoseIfSessionKnown() {
+        guard useOtherApp, let latestReading = lastGlucoseInSensorDataRxReading else { return }
+
+        // A newly added co-existence transmitter can observe glucose before transmitter time. Sending
+        // that glucose immediately would reach the application before its internal Sensor exists and
+        // the reading would be discarded. Keep the single reading buffered until the session date
+        // arrives. Existing sessions already have this date, so their normal immediate delivery is
+        // unchanged.
+        guard receivedSensorStartDate != nil else {
+            trace("in publishCoexistenceGlucoseIfSessionKnown, holding glucose until the running sensor session has been identified", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
+            return
+        }
+
+        timeStampOfLastG5Reading = latestReading.timeStamp
+
+        // reconcileInternalSensorSessionIfConfirmed queues newSensorDetected on the same main queue
+        // before this method is called from the transmitter time handler. This glucose callback is
+        // therefore processed only after xDrip4iOS has created its internal Sensor.
+        DispatchQueue.main.async { [weak self] in
+            guard let self = self else { return }
+            var copy = [latestReading]
+            self.cgmTransmitterDelegate?.cgmTransmitterInfoReceived(glucoseData: &copy, transmitterBatteryInfo: nil, sensorAge: nil)
+        }
+
+        // Clear the buffer only after delivery has been queued. If the session date was not yet
+        // available, the guard above deliberately left this reading in place for transmitter time.
+        lastGlucoseInSensorDataRxReading = nil
+    }
+
+    private func delayedBackfilledAt(for timeStamp: Date) -> Date? {
+        let now = Date()
+
+        return now.timeIntervalSince(timeStamp) > ConstantsBloodGlucose.minimumSecondsToConsiderAsBackfillDelay ? now : nil
+    }
+
     /// process transmitterTimeRxMessage
     private func processTransmitterTimeRxMessage(value:Data) {
         if let transmitterTimeRxMessage = DexcomTransmitterTimeRxMessage(data: value) {
@@ -1391,6 +1768,14 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                     trace("in processTransmitterTimeRxMessage, temporarily storing the received SensorStartDate till a glucoseRx message is received with valid sensor status", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
                     
                     self.receivedSensorStartDate = receivedSensorStartDate
+                }
+
+                if useOtherApp {
+                    // Initial co-existence can receive glucose before transmitter time. Once the
+                    // session date arrives, reconcile and release that retained reading. Primary
+                    // mode must continue through its normal Firefly command flow below.
+                    reconcileInternalSensorSessionIfConfirmed()
+                    publishCoexistenceGlucoseIfSessionKnown()
                 }
             } else {
                 trace("in processTransmitterTimeRxMessage, sensorStartDate is nil", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
@@ -1490,7 +1875,8 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     /// - returns:
     ///     - true if batter status requested, otherwise false
     private func batteryStatusRequested() -> Bool {
-        if Date() > Date(timeInterval: ConstantsDexcomG5.batteryReadPeriod, since: UserDefaults.standard.timeStampOfLastBatteryReading != nil ? UserDefaults.standard.timeStampOfLastBatteryReading! : Date(timeIntervalSince1970: 0)) {
+        let timeStampOfLastBatteryReading = batteryLastReadDate ?? Date(timeIntervalSince1970: 0)
+        if Date() > Date(timeInterval: ConstantsDexcomG5.batteryReadPeriod, since: timeStampOfLastBatteryReading) {
             trace("in batteryStatusRequested, last battery reading was long time ago, requesting now", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
             
             if let writeControlCharacteristic = writeControlCharacteristic {
@@ -1641,10 +2027,10 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     
     /// - sends contents of backFillStream and lastGlucoseInSensorDataRxReading
     /// - also assigns timeStampOfLastG5Reading to timestamp of lastGlucoseInSensorDataRxReading
-    /// - only to be used for firefly
+    /// - used for Firefly primary mode and passive co-existence backfill flushes
     /// - reset backFillStream, lastGlucoseInSensorDataRxReading, backfillTxSent, glucoseTxSent
     private func sendGlucoseDataToDelegate() {
-        guard useFireFlyFlow() else {return}
+        guard useFireFlyFlow() || useOtherApp else { return }
         
         // transmitterDate should be non nil
         guard let transmitterStartDate = transmitterStartDate else {
@@ -1670,7 +2056,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
                 // readings older dan maxBackfillPeriod are ignored
                 guard diff > 0, diff < TimeInterval.hours(ConstantsDexcomG5.maxBackfillPeriod) else { continue }
                 
-                glucoseDataArray.insert(GlucoseData(timeStamp: backfillDate, glucoseLevelRaw: Double(backFill.glucose)), at: 0)
+                glucoseDataArray.insert(GlucoseData(timeStamp: backfillDate, glucoseLevelRaw: Double(backFill.glucose), backfilledAt: Date()), at: 0)
                 
                 trace("in sendGlucoseDataToDelegate, new backfill, value = %{public}@, date = %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .debug, backFill.glucose.description, backfillDate.toStringForTrace(timeStyle: .long, dateStyle: .long))
             }
@@ -1695,7 +2081,8 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
             if let latest = glucoseDataArray.first {
                 let v = String(format: "%.1f", latest.glucoseLevelRaw)
                 let t = DateFormatter.localizedString(from: latest.timeStamp, dateStyle: .none, timeStyle: .medium)
-                trace("in sendGlucoseDataToDelegate, G5/G6 connection cycle summary: value = %{public}@ mg/dL at %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .info, v, t)}
+                trace("in sendGlucoseDataToDelegate, G5/G6 connection cycle summary: value = %{public}@ mg/dL at %{public}@", log: log, category: ConstantsLog.categoryCGMG5, type: .info, v, t)
+            }
 
             DispatchQueue.main.async { [weak self] in
                 guard let self = self else { return }
@@ -1722,7 +2109,7 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
     /// - check if stored calibration is valid or not, valid in the sense of "is it ok to send it to the transmitter"
     ///
     /// - returns: false if calibration.sentToTransmitter is true, false if calibrationToSendToTransmitter has a timestamp in the future, false if calibrationToSendToTransmitter has an invalid value ( < 40 or > 400). true in all other cases
-    private func calibrationIsValid(calibration: Calibration) -> Bool {
+    private func calibrationIsValid(calibration: PendingTransmitterCalibration) -> Bool {
         // if already sent to transmitter then invalid
         if calibration.sentToTransmitter {
             trace("in calibrationIsValid, calibration.sentToTransmitter is true, means this calibration is already sent to the transmitter", log: log, category: ConstantsLog.categoryCGMG5, type: .info)
@@ -1748,6 +2135,34 @@ class CGMG5Transmitter:BluetoothTransmitter, CGMTransmitter {
         }
         
         return true
+    }
+
+    private func updateCalibrationTransmitterStatus(calibration: PendingTransmitterCalibration, sentToTransmitter: Bool? = nil, acceptedByTransmitter: Bool? = nil) {
+        guard let managedObjectContext = calibration.managedObjectContext else { return }
+
+        managedObjectContext.perform {
+            let fetchRequest: NSFetchRequest<Calibration> = Calibration.fetchRequest()
+            fetchRequest.fetchLimit = 1
+            fetchRequest.predicate = NSPredicate(format: "id == %@", calibration.id)
+
+            do {
+                guard let calibrationToUpdate = try managedObjectContext.fetch(fetchRequest).first else { return }
+
+                if let sentToTransmitter = sentToTransmitter {
+                    calibrationToUpdate.sentToTransmitter = sentToTransmitter
+                }
+
+                if let acceptedByTransmitter = acceptedByTransmitter {
+                    calibrationToUpdate.acceptedByTransmitter = acceptedByTransmitter
+                }
+
+                if managedObjectContext.hasChanges {
+                    try managedObjectContext.save()
+                }
+            } catch {
+                trace("in updateCalibrationTransmitterStatus, unable to update calibration transmitter status, error = %{public}@", log: self.log, category: ConstantsLog.categoryCGMG5, type: .error, error.localizedDescription)
+            }
+        }
     }
     
     /// Possibly webOOPEnabled might be set to false, even though it's a transmitter that can only use with webOOPEnabled true. This can happen if transmitter is known but disconnected, app is launched, user goes to bluetooth settings. At that time, view will show the option to disable weboopenabled, then user disables oopweb, then clicks 'connect'. App will crash, and then user relaunches. At that time, webOOPEnabled will not be shown (transmitter is known, it returns false to nonWebOOPAllowed), but it's actually enabled. To avoid that transmitter starts using raw, this function here i sused

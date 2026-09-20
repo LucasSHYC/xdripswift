@@ -1,5 +1,4 @@
 import CoreData
-import UIKit
 import os
 
 /// development as explained in cocoacasts.com https://cocoacasts.com/bring-your-own
@@ -7,7 +6,7 @@ public final class CoreDataManager {
     
     // MARK: - Type Aliases
     
-    public typealias CoreDataManagerCompletion = () -> ()
+    public typealias CoreDataManagerCompletion = (CoreDataManager) -> Void
     
     // MARK: - Properties
     
@@ -104,6 +103,76 @@ public final class CoreDataManager {
         // Setup Core Data Stack
         setupCoreDataStack()
     }
+
+    /// Creates a synchronous in-memory Core Data stack for deterministic manager integration tests.
+    ///
+    /// Production callers continue to use `init(modelName:completion:)`, which opens the normal
+    /// SQLite store and installs application lifecycle saves. This initializer deliberately does
+    /// neither: its only purpose is to let tests instantiate real managers without touching the
+    /// user's application database or waiting for asynchronous persistent-store setup.
+    ///
+    /// - Parameter inMemoryModelName: The bundled managed-object model to load into memory.
+    init(inMemoryModelName: String) {
+        self.modelName = inMemoryModelName
+        self.completion = { _ in }
+
+        do {
+            try persistentStoreCoordinator.addPersistentStore(
+                ofType: NSInMemoryStoreType,
+                configurationName: nil,
+                at: nil,
+                options: nil
+            )
+        } catch {
+            fatalError("Unable to Add In-Memory Persistent Store: \(error.localizedDescription)")
+        }
+    }
+
+    /// Creates a synchronous SQLite Core Data stack for persistence integration tests.
+    ///
+    /// Production callers continue to use `init(modelName:completion:)`, while most manager tests
+    /// should use the faster in-memory initializer. This initializer is reserved for tests that
+    /// must release one complete stack and prove that a second stack can read the same disk data.
+    /// It deliberately avoids application lifecycle callbacks and never touches the app database.
+    ///
+    /// - Parameters:
+    ///   - testModelName: The bundled managed-object model to load.
+    ///   - persistentStoreURL: A test-owned temporary location for the SQLite store.
+    init(testModelName: String, persistentStoreURL: URL) throws {
+        self.modelName = testModelName
+        self.completion = { _ in }
+
+        let options = [
+            NSMigratePersistentStoresAutomaticallyOption: true,
+            NSInferMappingModelAutomaticallyOption: true,
+        ]
+
+        try persistentStoreCoordinator.addPersistentStore(
+            ofType: NSSQLiteStoreType,
+            configurationName: nil,
+            at: persistentStoreURL,
+            options: options
+        )
+    }
+
+    /// Disconnects a test-owned SQLite store so a replacement stack opens it from disk afresh.
+    ///
+    /// Releasing a manager is not enough because its parent and child contexts can keep the Core
+    /// Data graph alive until a later autorelease-pool drain. Tests that simulate an app restart
+    /// use this explicit boundary to avoid reading through an earlier coordinator or deleting an
+    /// SQLite file that is still open. Production code must never detach its live application store.
+    func disconnectPersistentStoresForTesting() throws {
+        mainManagedObjectContext.performAndWait {
+            self.mainManagedObjectContext.reset()
+        }
+        privateManagedObjectContext.performAndWait {
+            self.privateManagedObjectContext.reset()
+        }
+
+        for persistentStore in persistentStoreCoordinator.persistentStores {
+            try persistentStoreCoordinator.remove(persistentStore)
+        }
+    }
     
     // MARK: - Helper Methods
     
@@ -116,27 +185,42 @@ public final class CoreDataManager {
             self.addPersistentStore(to: persistentStoreCoordinator)
             
             // Invoke Completion On Main Queue
-            DispatchQueue.main.async { self.completion() }
+            DispatchQueue.main.async { self.completion(self) }
         }
         
         // when app terminates, call saveChangesAtTermination, just in case that somewhere in the code saveChanges is not called when needed
         ApplicationManager.shared.addClosureToRunWhenAppWillTerminate(key: applicationManagerKeySaveChangesWhenAppTerminates, closure: {self.saveChangesAtTermination()})
         
         // when app goes to background, call saveChanges, just in case that somewhere in the code saveChanges is not called when needed
-        ApplicationManager.shared.addClosureToRunWhenAppDidEnterBackground(key: applicationManagerKeySaveChangesWhenAppGoesToBackground, closure: {self.saveChanges()})
+        ApplicationManager.shared.addClosureToRunWhenAppDidEnterBackground(key: applicationManagerKeySaveChangesWhenAppGoesToBackground, closure: { _ = self.saveChanges() })
         
     }
 
     // MARK: -
     
-    public func saveChanges() {
+    /// Saves pending main-context changes and schedules the existing private-context save.
+    ///
+    /// Most callers intentionally ignore the result. User-facing audit paths can use it to avoid
+    /// claiming that a treatment or reading change completed when the synchronous main save failed.
+    /// Private-context work remains asynchronous and independent, matching the existing behavior.
+    @discardableResult
+    public func saveChanges() -> Bool {
+
+        var mainContextSaveSucceeded = true
 
         mainManagedObjectContext.performAndWait {
             do {
                 if self.mainManagedObjectContext.hasChanges {
+                    // A child-context save can leave new peripherals with temporary IDs even after
+                    // the parent commits. History callbacks retain these objects and require stable IDs.
+                    let peripherals = self.mainManagedObjectContext.insertedObjects.filter { $0 is BLEPeripheral && $0.objectID.isTemporaryID }
+                    if !peripherals.isEmpty {
+                        try self.mainManagedObjectContext.obtainPermanentIDs(for: Array(peripherals))
+                    }
                     try self.mainManagedObjectContext.save()
                 }
             } catch {
+                mainContextSaveSucceeded = false
                 trace("in savechanges,  Unable to Save Changes of Main Managed Object Context, error.localizedDescription  = %{public}@", log: log, category: ConstantsLog.categoryCoreDataManager, type: .info, error.localizedDescription)
                 
                 let error = error as NSError
@@ -168,7 +252,52 @@ public final class CoreDataManager {
             }
             
         }
-        
+
+        return mainContextSaveSucceeded
+    }
+
+    /// Saves both managed-object contexts before returning so durability-sensitive writes have
+    /// reached the persistent store rather than only the in-memory parent context.
+    ///
+    /// The normal save path intentionally leaves the private-context save asynchronous. Callers
+    /// should use this bounded synchronous path only when losing the process immediately after the
+    /// write would lose user-visible state, such as a sparse battery observation received shortly
+    /// before a development build replaces the running app.
+    @discardableResult
+    func saveChangesSynchronously() -> Bool {
+        var saveSucceeded = true
+
+        mainManagedObjectContext.performAndWait {
+            do {
+                if self.mainManagedObjectContext.hasChanges {
+                    // A child-context save can leave new peripherals with temporary IDs even after
+                    // the parent commits. History callbacks retain these objects and require stable IDs.
+                    let peripherals = self.mainManagedObjectContext.insertedObjects.filter { $0 is BLEPeripheral && $0.objectID.isTemporaryID }
+                    if !peripherals.isEmpty {
+                        try self.mainManagedObjectContext.obtainPermanentIDs(for: Array(peripherals))
+                    }
+                    try self.mainManagedObjectContext.save()
+                }
+            } catch {
+                saveSucceeded = false
+                trace("in saveChangesSynchronously, failed to save main context: %{public}@", log: self.log, category: ConstantsLog.categoryCoreDataManager, type: .error, error.localizedDescription)
+            }
+        }
+
+        guard saveSucceeded else { return false }
+
+        privateManagedObjectContext.performAndWait {
+            do {
+                if self.privateManagedObjectContext.hasChanges {
+                    try self.privateManagedObjectContext.save()
+                }
+            } catch {
+                saveSucceeded = false
+                trace("in saveChangesSynchronously, failed to save private context: %{public}@", log: self.log, category: ConstantsLog.categoryCoreDataManager, type: .error, error.localizedDescription)
+            }
+        }
+
+        return saveSucceeded
     }
     
     /// creates an NSManagedObjectContext with concurrencyType = privateQueueConcurrencyType and parent = mainManagedObjectContext

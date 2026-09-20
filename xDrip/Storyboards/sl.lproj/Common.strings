@@ -82,7 +82,7 @@
 "common_minutes" = "mins";
 
 /// literally yes, without capital
-"yes" = "Yes";
+"yes" = "Da";
 
 /// literally 'Cancel'
 "common_cancel" = "Cancel";
@@ -93,8 +93,6 @@
 /// white
 "white" = "white";
 
-/// WiFi
-"WiFi" = "WiFi";
 
 /// mg/dl
 "common_mgdl" = "mg/dL";
@@ -136,6 +134,9 @@
 
 /// literal translation needed
 "common_days" = "days";
+"common_landscape_comparingWithLast" = "Primerjava z zadnjimi:";
+"common_landscape_comparisonDays" = "%d dni";
+"common_landscape_comparisonNone" = "Brez";
 
 /// the word average
 "common_statistics_average" = "Average";
@@ -168,3 +169,17 @@
 
 /// the words in user range
 "common_statistics_userRange" = "User Range";
+
+// Local therapy accessibility
+"therapy.estimatedIOB" = "Ocenjeni aktivni inzulin";
+"therapy.estimatedCOB" = "Ocenjeni aktivni ogljikovi hidrati";
+
+/* Actions for leaving an editor with unsaved changes. */
+"common_unsavedChanges" = "Neshranjene spremembe";
+"common_save" = "Shrani";
+"common_discardChanges" = "Zavrzi spremembe";
+"common_back" = "Nazaj";
+
+// Live Activity sensor warm-up
+"common_sensorWarmingUp" = "Senzor se ogreva";
+"common_sensorWarmupUntilFormat" = "Do %@";

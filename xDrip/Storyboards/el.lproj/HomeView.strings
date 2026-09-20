@@ -36,7 +36,7 @@
 "success" = "Επιτυχία";
 "failed" = "Απέτυχε";
 "dexcomBatteryTooLow" = "Η μπαταρία του πομπού είναι πολύ χαμηλή!";
-"enterSensorCode" = "εάν δεν έχετε κωδικό αισθητήρα χρησιμοποιήστε 0000, αλλά να γνωρίζετε ότι δεν θα λάβετε μετρήσεις μέχρι να βαθμονομήσετε";
+"enterSensorCode" = "Εισαγάγετε τον κωδικό του αισθητήρα χειροκίνητα, σαρώστε την ετικέτα του αισθητήρα ή επιλέξτε μια φωτογραφία.\n\nΑν δεν έχετε τον κωδικό ή θέλετε να χρησιμοποιήσετε μια συνεδρία αισθητήρα που ήδη εκτελείται στον πομπό, επιλέξτε Χρήση χωρίς κωδικό.";
 "stopSensorConfirmation" = "Είστε βέβαιοι ότι θέλετε να σταματήσετε τον αισθητήρα;";
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -59,7 +59,7 @@
 "sensorDuration" = "Sensor Duration";
 
 /// nightscout is not enabled
-"nightscoutURLMissing" = "Nightscout URL missing";
+"nightscoutURLMissing" = "URL missing";
 
 /// ask the user to disconnect and reconnect the sensor
 "reconnectLibreDataSource" = "Disconnect and reconnect Libre sensor";
@@ -69,3 +69,114 @@
 
 /// no data source is enabled or connected
 "noDataSourceConnected" = "No CGM data source connected";
+
+"postProcessingFiveMinuteReadings" = "5-minute readings";
+"postProcessingAlgorithm" = "Algorithm";
+"sensorLifetimeRemainingFormat" = "Απομένουν %@";
+"postProcessingAlgorithmSavitzkyGolay" = "Savitzky-Golay";
+
+"sensorManagementNoiseTitle" = "Θόρυβος αισθητήρα";
+"sensorManagementNoiseShortTerm" = "Τελευταία 30 λεπτά";
+"sensorManagementNoiseLongTerm" = "Τελευταίες 4 ώρες";
+"sensorManagementNoiseCollecting" = "Συλλογή δεδομένων";
+"sensorManagementNoiseLow" = "Χαμηλός";
+"sensorManagementNoiseElevated" = "Αυξημένος";
+"sensorManagementNoiseVeryHigh" = "Πολύ υψηλός";
+"sensorManagementNoiseExtreme" = "Ακραίος";
+"sensorManagementNoiseFlatline" = "Ο αισθητήρας πιθανότατα απέτυχε.";
+"sensorNoiseWarningExtremeTitle" = "Ακραίος θόρυβος αισθητήρα";
+"sensorNoiseWarningPersistentTitle" = "Επίμονος θόρυβος αισθητήρα";
+"sensorNoiseWarningFlatlineTitle" = "Το σήμα του αισθητήρα είναι επίπεδο";
+"sensorNoiseHistoryTitle" = "Ιστορικό θορύβου";
+"sensorNoiseHistoryCurrentTitle" = "Τρέχουσες μετρήσεις";
+"sensorNoiseHistoryChartTitle" = "Θόρυβος με την πάροδο του χρόνου";
+"sensorNoiseHistoryRangeTitle" = "Χρονικό εύρος";
+"sensorNoiseHistoryDayRange" = "1d";
+"sensorNoiseHistoryThreeDayRange" = "3 ημ.";
+"sensorNoiseHistoryWeekRange" = "7 ημ.";
+"sensorNoiseHistoryAllRange" = "Όλα";
+"sensorNoiseHistoryShortCompact" = "30 λεπ.";
+"sensorNoiseHistoryLongCompact" = "4 ώρ.";
+"sensorNoiseHistoryLoading" = "Δημιουργία ιστορικού αισθητήρα";
+"sensorNoiseHistoryNoDataTitle" = "Δεν υπάρχουν ακόμη αρκετά δεδομένα θορύβου";
+"sensorNoiseHistoryNoDataMessage" = "Το γράφημα θα εμφανιστεί αφού συλλεχθούν αρκετές ενδείξεις αισθητήρα.";
+"sensorNoiseHistoryChartAccessibility" = "Γράφημα ιστορικού θορύβου αισθητήρα";
+"pumpBattery" = "Μπαταρία";
+"pumpReservoir" = "Δεξαμενή";
+"sensorManagementSessionLifetime" = "Elapsed / Remaining";
+"sensorManagementSessionDetails" = "Session Details";
+"sensorManagementCalibrationOpenTitle" = "Calibration Details";
+"sensorManagementCGMType" = "CGM Type";
+"sensorManagementLastCalibration" = "Τελευταία";
+"sensorManagementStatusActive" = "Sensor Active";
+"sensorManagementStarted" = "Started";
+"sensorManagementEnds" = "Ends";
+"sensorHealthPersistentNoiseTitle" = "Πολύ υψηλός θόρυβος αισθητήρα";
+"sensorHealthPersistentNoiseGuidance" = "Πολύ υψηλός θόρυβος για 12 ώρες. Εξετάστε την αντικατάσταση του αισθητήρα αν συνεχιστεί.";
+"sensorHealthFlatlineTitle" = "Το σήμα του αισθητήρα είναι επίπεδο";
+"sensorHealthFlatlineGuidance" = "Οι μετρήσεις δεν άλλαξαν για 30 λεπτά. Αυτό συνήθως σημαίνει ότι ο αισθητήρας απέτυχε/έληξε.";
+"sensorHealthTemporaryIssueTitle" = "Προσωρινό πρόβλημα αισθητήρα";
+"sensorHealthTemporaryIssueGuidance" = "Προσωρινό πρόβλημα αισθητήρα για 3 ώρες. Ελέγξτε με μετρητή και ακολουθήστε τις οδηγίες του κατασκευαστή.";
+"sensorHealthSensorFailedTitle" = "Αποτυχία αισθητήρα";
+"sensorHealthSensorFailedGuidance" = "Αναφέρθηκε αποτυχία αισθητήρα. Αντικαταστήστε τον αισθητήρα.";
+"sensorHealthTransmitterFailedTitle" = "Αποτυχία πομπού";
+"sensorHealthTransmitterFailedGuidance" = "Αναφέρθηκε αποτυχία πομπού. Ελέγξτε ή αντικαταστήστε τον.";
+"connectingToCGM" = "Σύνδεση με το CGM...";
+"reconnectingToCGM" = "Επανασύνδεση με το CGM...";
+
+/* Dexcom G6 sensor-label scanning */
+"scanWithCamera" = "Σάρωση με κάμερα";
+"manuallyEnterSensorCode" = "Μη αυτόματη εισαγωγή κωδικού";
+"dexcomG6ManualSensorCodeMessage" = "Εισαγάγετε τον τετραψήφιο κωδικό βαθμονόμησης από την ετικέτα του αισθητήρα.";
+"chooseSensorLabelPhoto" = "Επιλογή φωτογραφίας";
+"readingSensorLabel" = "Ανάγνωση ετικέτας αισθητήρα...";
+"scanSensorLabel" = "Σάρωση ετικέτας αισθητήρα";
+"sensorCodeScannerGuidance" = "Τοποθετήστε το Data Matrix μέσα στο πλαίσιο.";
+"sensorCodeScannerTorch" = "Φακός";
+"cameraAccessRequired" = "Απαιτείται πρόσβαση στην κάμερα";
+"cameraAccessRequiredMessage" = "Επιτρέψτε την πρόσβαση στην κάμερα στις Ρυθμίσεις, εισαγάγετε τον κωδικό χειροκίνητα ή επιλέξτε φωτογραφία.";
+"openSettings" = "Άνοιγμα Ρυθμίσεων";
+"cameraUnavailable" = "Η κάμερα δεν είναι διαθέσιμη";
+"cameraUnavailableMessage" = "Εισαγάγετε τον κωδικό αισθητήρα χειροκίνητα ή επιλέξτε φωτογραφία.";
+"sensorInformationTitle" = "Πληροφορίες αισθητήρα";
+"sensorLotNumber" = "Αριθμός παρτίδας";
+"sensorSerialNumberMetadata" = "Σειριακός αριθμός αισθητήρα";
+"sensorLabelReviewFooter" = "Ελέγξτε την επιλογή σας και τυχόν πληροφορίες της ετικέτας και πατήστε Συνέχεια.";
+"sensorLabelScanFailed" = "Η ετικέτα αισθητήρα δεν διαβάστηκε";
+"multipleSensorLabelsFound" = "Η φωτογραφία περιέχει περισσότερες από μία ετικέτες αισθητήρα. Επιλέξτε φωτογραφία με μία ετικέτα.";
+"noSensorLabelFound" = "Δεν βρέθηκε έγκυρη ετικέτα αισθητήρα Dexcom G6 στη φωτογραφία.";
+"invalidSensorLabelFound" = "Βρέθηκε Data Matrix, αλλά δεν ήταν έγκυρη ετικέτα αισθητήρα Dexcom G6.";
+"sensorLabelPhotoUnreadable" = "Δεν ήταν δυνατή η ανάγνωση της επιλεγμένης φωτογραφίας.";
+"sensorCodeMetadata" = "Κωδικός αισθητήρα";
+"scannedSensorLabelCode" = "Κωδικός σαρωμένης ετικέτας";
+"noCodeSensorSessionValue" = "0000 (Συνεδρία χωρίς κωδικό)";
+"sensorCodeUnknown" = "Άγνωστος";
+
+"sensorManagementCalibrationInProgress" = "Βαθμονόμηση σε εξέλιξη...";
+"sensorManagementCalibrationQueued" = "Σε αναμονή";
+"sensorManagementCalibrationSent" = "Στάλθηκε, αναμονή απάντησης";
+"sensorManagementCalibrationSentShort" = "Στάλθηκε";
+"sensorManagementCalibrationCompletedShort" = "Ολοκληρώθηκε";
+"sensorManagementCalibrationRejectedShort" = "Απορρίφθηκε";
+"sensorManagementCalibrationErrorShort" = "Σφάλμα";
+"sensorManagementCalibrationProcessing" = "Επεξεργασία";
+"sensorManagementCalibrationCompletedHigh" = "Ολοκληρώθηκε, υψηλή αξιοπιστία";
+"sensorManagementCalibrationCompletedLow" = "Ολοκληρώθηκε, χαμηλή αξιοπιστία";
+"sensorManagementCalibrationRejectedFormat" = "Απορρίφθηκε: %@";
+"sensorManagementCalibrationNotPermitted" = "Η βαθμονόμηση δεν επιτρέπεται";
+"sensorManagementCalibrationNotPermittedNote" = "Ο πομπός δεν επιτρέπει βαθμονόμηση αυτή τη στιγμή.";
+"sensorManagementCalibrationRejectedRange" = "Τιμή εκτός ορίων";
+"sensorManagementCalibrationRejectedTime" = "Μη έγκυρη ώρα βαθμονόμησης";
+"sensorManagementCalibrationRejectedDuplicate" = "Έχει ήδη εισαχθεί";
+"sensorManagementCalibrationRejectedBounds" = "Αποτυχία ελέγχου ορίων";
+"sensorManagementCalibrationRejectedUnknown" = "Άγνωστη αιτία";
+"sensorManufactureDate" = "Ημερομηνία κατασκευής";
+"sensorExpirationDate" = "Ημερομηνία λήξης";
+"sensorManagementWaitingForSensorStart" = "Αναμονή έναρξης αισθητήρα";
+"sensorManagementStatusWarmingUp" = "Προθέρμανση";
+"sensorCodeContinue" = "Συνέχεια";
+"useWithoutSensorCode" = "Χρήση χωρίς κωδικό";
+"noSensorCode" = "Χωρίς κωδικό (0000)";
+"dexcomG7SelectSensorCodeMessage" = "Εισαγάγετε χειροκίνητα τον τετραψήφιο κωδικό σύζευξης, σαρώστε τον τρέχοντα εφαρμογέα ή επιλέξτε μια φωτογραφία. Ελέγξτε τον επιλεγμένο κωδικό και πατήστε Συνέχεια.";
+"noSensorCodeSelectedTitle" = "Συνέχεια χωρίς κωδικό αισθητήρα;";
+"noSensorCodeSelectedMessage" = "Αν εκτελείται ήδη μια συνεδρία αισθητήρα στον πομπό, η εφαρμογή θα χρησιμοποιήσει αυτή τη συνεδρία με τις υπάρχουσες απαιτήσεις βαθμονόμησης.\n\nΗ έναρξη νέας συνεδρίας χωρίς κωδικό απαιτεί βαθμονομήσεις μετά την προθέρμανση και περιοδικά στη συνέχεια. Η απενεργοποίηση της υπενθύμισης βαθμονόμησης της εφαρμογής δεν καταργεί αυτές τις απαιτήσεις.";

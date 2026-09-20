@@ -24,7 +24,14 @@ extension XDripWidget {
         func getTimeline(in context: Context, completion: @escaping (Timeline<Entry>) -> ()) {
             let entry = Entry(date: .now, widgetState: getWidgetStateFromSharedUserDefaults() ?? sampleWidgetStateFromProvider)
                 
-            completion(.init(entries: [entry], policy: .atEnd))
+            var entries = [entry]
+            if let metrics = entry.widgetState.therapyMetrics {
+                let deadlines = [metrics.iob.expiresAt, metrics.cob.expiresAt, metrics.iob.visibilityDeadline, metrics.cob.visibilityDeadline].compactMap { $0 }
+                for date in Set(deadlines).sorted() where date > entry.date {
+                    entries.append(Entry(date: date, widgetState: entry.widgetState))
+                }
+            }
+            completion(.init(entries: entries, policy: .atEnd))
         }
     }
 }
@@ -37,8 +44,20 @@ extension XDripWidget.Provider {
         
         guard let sharedUserDefaults = UserDefaults(suiteName: Bundle.main.appGroupSuiteName) else {return nil}
         
-        guard let encodedLatestReadings = sharedUserDefaults.data(forKey: "widgetSharedUserDefaults.\(Bundle.main.mainAppBundleIdentifier)") else {
-            return nil
+        let keepAliveDisabledMessage = sharedUserDefaults.string(
+            forKey: WidgetSharedUserDefaultsModel.keepAliveDisabledMessageKey(
+                for: Bundle.main.mainAppBundleIdentifier
+            )
+        ).flatMap { $0.isEmpty ? nil : $0 }
+
+        guard let encodedLatestReadings = sharedUserDefaults.data(
+            forKey: WidgetSharedUserDefaultsModel.widgetDataKey(
+                for: Bundle.main.mainAppBundleIdentifier
+            )
+        ) else {
+            var sampleState = sampleWidgetStateFromProvider
+            sampleState.keepAliveDisabledMessage = keepAliveDisabledMessage
+            return sampleState
         }
         
         let decoder = JSONDecoder()
@@ -52,12 +71,14 @@ extension XDripWidget.Provider {
                 Date(timeIntervalSince1970: date)
             }
             
-            return Entry.WidgetState(bgReadingValues: data.bgReadingValues, bgReadingDates: bgReadingDates, isMgDl: data.isMgDl, slopeOrdinal: data.slopeOrdinal, deltaValueInUserUnit: data.deltaValueInUserUnit, urgentLowLimitInMgDl: data.urgentLowLimitInMgDl, lowLimitInMgDl: data.lowLimitInMgDl, highLimitInMgDl: data.highLimitInMgDl, urgentHighLimitInMgDl: data.urgentHighLimitInMgDl, dataSourceDescription: data.dataSourceDescription, followerPatientName: data.followerPatientName, deviceStatusCreatedAt: data.deviceStatusCreatedAt, deviceStatusLastLoopDate: data.deviceStatusLastLoopDate, allowStandByHighContrast: data.allowStandByHighContrast, forceStandByBigNumbers: data.forceStandByBigNumbers)
+            return Entry.WidgetState(bgReadingValues: data.bgReadingValues, bgReadingDates: bgReadingDates, isMgDl: data.isMgDl, slopeOrdinal: data.slopeOrdinal, deltaValueInUserUnit: data.deltaValueInUserUnit, urgentLowLimitInMgDl: data.urgentLowLimitInMgDl, lowLimitInMgDl: data.lowLimitInMgDl, highLimitInMgDl: data.highLimitInMgDl, urgentHighLimitInMgDl: data.urgentHighLimitInMgDl, dataSourceDescription: data.dataSourceDescription, followerPatientName: data.followerPatientName, keepAliveDisabledMessage: keepAliveDisabledMessage, aidStatus: data.aidStatus, therapyMetrics: data.therapyMetrics, allowStandByHighContrast: data.allowStandByHighContrast, forceStandByBigNumbers: data.forceStandByBigNumbers)
         } catch {
             print(error.localizedDescription)
         }
               
-        return sampleWidgetStateFromProvider
+        var sampleState = sampleWidgetStateFromProvider
+        sampleState.keepAliveDisabledMessage = keepAliveDisabledMessage
+        return sampleState
     }
     
     private var sampleWidgetStateFromProvider: XDripWidget.Entry.WidgetState {        
@@ -98,7 +119,6 @@ extension XDripWidget.Provider {
             return bgValueArray
         }
         
-        return Entry.WidgetState(bgReadingValues: bgValueArray(), bgReadingDates: bgDateArray(), isMgDl: true, slopeOrdinal: 1, deltaValueInUserUnit: 0, urgentLowLimitInMgDl: ConstantsBGGraphBuilder.defaultUrgentLowMarkInMgdl, lowLimitInMgDl: ConstantsBGGraphBuilder.defaultLowMarkInMgdl, highLimitInMgDl: ConstantsBGGraphBuilder.defaultHighMarkInMgdl, urgentHighLimitInMgDl: ConstantsBGGraphBuilder.defaultUrgentHighMarkInMgdl, dataSourceDescription: "Dexcom G6", followerPatientName: nil, deviceStatusCreatedAt: Date().addingTimeInterval(-200), deviceStatusLastLoopDate: Date().addingTimeInterval(-120))
+        return Entry.WidgetState(bgReadingValues: bgValueArray(), bgReadingDates: bgDateArray(), isMgDl: true, slopeOrdinal: 1, deltaValueInUserUnit: 0, urgentLowLimitInMgDl: ConstantsBGGraphBuilder.defaultUrgentLowMarkInMgdl, lowLimitInMgDl: ConstantsBGGraphBuilder.defaultLowMarkInMgdl, highLimitInMgDl: ConstantsBGGraphBuilder.defaultHighMarkInMgdl, urgentHighLimitInMgDl: ConstantsBGGraphBuilder.defaultUrgentHighMarkInMgdl, dataSourceDescription: "Dexcom G6", followerPatientName: nil)
     }
 }
-

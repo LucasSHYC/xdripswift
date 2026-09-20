@@ -36,7 +36,7 @@
 "success" = "Успешно";
 "failed" = "Не успешно";
 "dexcomBatteryTooLow" = "Батарея трансмиттера слишком разряжена!";
-"enterSensorCode" = "если у вас нет кода датчика, используйте 0000, но имейте в виду, что вы не получите показания, пока не откалибруете";
+"enterSensorCode" = "Введите код сенсора вручную, отсканируйте этикетку сенсора или выберите фото.\n\nЕсли у вас нет кода или вы хотите использовать сеанс сенсора, уже запущенный на передатчике, выберите «Использовать без кода».";
 "stopSensorConfirmation" = "Вы уверены, что хотите остановить датчик?";
 
 /////////////////////////////////////////////////////////////////////////////////////////////
@@ -59,7 +59,7 @@
 "sensorDuration" = "Sensor Duration";
 
 /// nightscout is not enabled
-"nightscoutURLMissing" = "Nightscout URL missing";
+"nightscoutURLMissing" = "URL missing";
 
 /// ask the user to disconnect and reconnect the sensor
 "reconnectLibreDataSource" = "Disconnect and reconnect Libre sensor";
@@ -69,3 +69,114 @@
 
 /// no data source is enabled or connected
 "noDataSourceConnected" = "No CGM data source connected";
+
+"postProcessingFiveMinuteReadings" = "5-minute readings";
+"postProcessingAlgorithm" = "Algorithm";
+"sensorLifetimeRemainingFormat" = "Осталось %@";
+"postProcessingAlgorithmSavitzkyGolay" = "Savitzky-Golay";
+
+"sensorManagementNoiseTitle" = "Шум сенсора";
+"sensorManagementNoiseShortTerm" = "Последние 30 минут";
+"sensorManagementNoiseLongTerm" = "Последние 4 часа";
+"sensorManagementNoiseCollecting" = "Сбор данных";
+"sensorManagementNoiseLow" = "Низкий";
+"sensorManagementNoiseElevated" = "Повышенный";
+"sensorManagementNoiseVeryHigh" = "Очень высокий";
+"sensorManagementNoiseExtreme" = "Экстремальный";
+"sensorManagementNoiseFlatline" = "Сенсор, вероятно, вышел из строя.";
+"sensorNoiseWarningExtremeTitle" = "Экстремальный шум сенсора";
+"sensorNoiseWarningPersistentTitle" = "Постоянный шум сенсора";
+"sensorNoiseWarningFlatlineTitle" = "Сигнал сенсора плоский";
+"sensorNoiseHistoryTitle" = "История шума";
+"sensorNoiseHistoryCurrentTitle" = "Текущие измерения";
+"sensorNoiseHistoryChartTitle" = "Шум во времени";
+"sensorNoiseHistoryRangeTitle" = "Период";
+"sensorNoiseHistoryDayRange" = "1d";
+"sensorNoiseHistoryThreeDayRange" = "3 дн.";
+"sensorNoiseHistoryWeekRange" = "7 дн.";
+"sensorNoiseHistoryAllRange" = "Всё";
+"sensorNoiseHistoryShortCompact" = "30 мин";
+"sensorNoiseHistoryLongCompact" = "4 ч";
+"sensorNoiseHistoryLoading" = "Создание истории сенсора";
+"sensorNoiseHistoryNoDataTitle" = "Пока недостаточно данных о шуме";
+"sensorNoiseHistoryNoDataMessage" = "График появится после накопления достаточного количества показаний сенсора.";
+"sensorNoiseHistoryChartAccessibility" = "График истории шума сенсора";
+"pumpBattery" = "Батарея";
+"pumpReservoir" = "Резервуар";
+"sensorManagementSessionLifetime" = "Elapsed / Remaining";
+"sensorManagementSessionDetails" = "Session Details";
+"sensorManagementCalibrationOpenTitle" = "Calibration Details";
+"sensorManagementCGMType" = "CGM Type";
+"sensorManagementLastCalibration" = "Последняя";
+"sensorManagementStatusActive" = "Sensor Active";
+"sensorManagementStarted" = "Started";
+"sensorManagementEnds" = "Ends";
+"sensorHealthPersistentNoiseTitle" = "Очень высокий шум сенсора";
+"sensorHealthPersistentNoiseGuidance" = "Очень высокий шум в течение 12 часов. Если он сохраняется, рассмотрите замену сенсора.";
+"sensorHealthFlatlineTitle" = "Сигнал сенсора не меняется";
+"sensorHealthFlatlineGuidance" = "Показания не менялись 30 минут. Обычно это означает, что сенсор неисправен/истёк.";
+"sensorHealthTemporaryIssueTitle" = "Временная проблема с сенсором";
+"sensorHealthTemporaryIssueGuidance" = "Временная проблема с сенсором в течение 3 часов. Проверьте глюкометром и следуйте рекомендациям производителя.";
+"sensorHealthSensorFailedTitle" = "Отказ сенсора";
+"sensorHealthSensorFailedGuidance" = "Сообщается об отказе сенсора. Замените сенсор.";
+"sensorHealthTransmitterFailedTitle" = "Отказ передатчика";
+"sensorHealthTransmitterFailedGuidance" = "Сообщается об отказе передатчика. Проверьте или замените его.";
+"connectingToCGM" = "Подключение к CGM...";
+"reconnectingToCGM" = "Переподключение к CGM...";
+
+/* Dexcom G6 sensor-label scanning */
+"scanWithCamera" = "Сканировать камерой";
+"manuallyEnterSensorCode" = "Ввести код вручную";
+"dexcomG6ManualSensorCodeMessage" = "Введите четырёхзначный код калибровки с этикетки сенсора.";
+"chooseSensorLabelPhoto" = "Выбрать фото";
+"readingSensorLabel" = "Чтение этикетки сенсора...";
+"scanSensorLabel" = "Сканировать этикетку сенсора";
+"sensorCodeScannerGuidance" = "Поместите Data Matrix внутри рамки.";
+"sensorCodeScannerTorch" = "Фонарик";
+"cameraAccessRequired" = "Требуется доступ к камере";
+"cameraAccessRequiredMessage" = "Разрешите доступ к камере в Настройках, введите код вручную или выберите фото.";
+"openSettings" = "Открыть Настройки";
+"cameraUnavailable" = "Камера недоступна";
+"cameraUnavailableMessage" = "Введите код сенсора вручную или выберите фото.";
+"sensorInformationTitle" = "Информация о сенсоре";
+"sensorLotNumber" = "Номер партии";
+"sensorSerialNumberMetadata" = "Серийный номер сенсора";
+"sensorLabelReviewFooter" = "Проверьте свой выбор и данные этикетки, если они есть, затем нажмите «Продолжить».";
+"sensorLabelScanFailed" = "Этикетка сенсора не прочитана";
+"multipleSensorLabelsFound" = "На фото несколько этикеток сенсора. Выберите фото с одной этикеткой.";
+"noSensorLabelFound" = "На фото не найдена допустимая этикетка сенсора Dexcom G6.";
+"invalidSensorLabelFound" = "Найден код Data Matrix, но это не допустимая этикетка сенсора Dexcom G6.";
+"sensorLabelPhotoUnreadable" = "Не удалось прочитать выбранное фото.";
+"sensorCodeMetadata" = "Код сенсора";
+"scannedSensorLabelCode" = "Код со сканированной этикетки";
+"noCodeSensorSessionValue" = "0000 (Сеанс без кода)";
+"sensorCodeUnknown" = "Неизвестно";
+
+"sensorManagementCalibrationInProgress" = "Калибровка выполняется...";
+"sensorManagementCalibrationQueued" = "В очереди";
+"sensorManagementCalibrationSent" = "Отправлено, ожидание ответа";
+"sensorManagementCalibrationSentShort" = "Отправлено";
+"sensorManagementCalibrationCompletedShort" = "Завершено";
+"sensorManagementCalibrationRejectedShort" = "Отклонено";
+"sensorManagementCalibrationErrorShort" = "Ошибка";
+"sensorManagementCalibrationProcessing" = "Обработка";
+"sensorManagementCalibrationCompletedHigh" = "Завершено, высокая точность";
+"sensorManagementCalibrationCompletedLow" = "Завершено, низкая точность";
+"sensorManagementCalibrationRejectedFormat" = "Отклонено: %@";
+"sensorManagementCalibrationNotPermitted" = "Калибровка не разрешена";
+"sensorManagementCalibrationNotPermittedNote" = "Передатчик сейчас не разрешает калибровку.";
+"sensorManagementCalibrationRejectedRange" = "Значение вне диапазона";
+"sensorManagementCalibrationRejectedTime" = "Недопустимое время калибровки";
+"sensorManagementCalibrationRejectedDuplicate" = "Уже введено";
+"sensorManagementCalibrationRejectedBounds" = "Ошибка проверки границ";
+"sensorManagementCalibrationRejectedUnknown" = "Неизвестная причина";
+"sensorManufactureDate" = "Дата изготовления";
+"sensorExpirationDate" = "Срок годности";
+"sensorManagementWaitingForSensorStart" = "Ожидание запуска сенсора";
+"sensorManagementStatusWarmingUp" = "Прогрев";
+"sensorCodeContinue" = "Продолжить";
+"useWithoutSensorCode" = "Использовать без кода";
+"noSensorCode" = "Без кода (0000)";
+"dexcomG7SelectSensorCodeMessage" = "Введите четырёхзначный код сопряжения вручную, отсканируйте текущий аппликатор или выберите фото. Проверьте выбранный код и нажмите «Продолжить».";
+"noSensorCodeSelectedTitle" = "Продолжить без кода сенсора?";
+"noSensorCodeSelectedMessage" = "Если на передатчике уже запущен сеанс сенсора, приложение будет использовать его с существующими требованиями к калибровке.\n\nЗапуск нового сеанса без кода требует калибровок после прогрева и периодически в дальнейшем. Отключение напоминания о калибровке в приложении не отменяет эти требования.";

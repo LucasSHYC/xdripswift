@@ -58,14 +58,39 @@ fileprivate func getDocumentsDirectory() -> URL {
 /// trace file currently in use, in case tracing needs to be stored on file
 fileprivate var traceFileName:URL?
 
-/// function to be used for logging, takes same parameters as os_log but in a next phase also NSLog can be added, or writing to disk to send later via e-mail ..
-/// - message : the text, same format as in os_log with %{private} and %{public} to either keep variables private or public , for NSLog, only 3 String formatters are suppored "@" for String, "d" for Int, "f" for double.
-/// - log : is the name of the category that will be used in OSLog
-/// - category is the same as used for creating the log (see class ConstantsLog), it's repeated here to use in NSLog
-/// - args : optional list of parameters that will be used. MAXIMUM 10 !
+/// Writes the existing developer trace and optionally offers a typed fact to the consumer log.
 ///
-/// Example
-func trace(_ message: StaticString, log:OSLog, category: String, type: OSLogType, _ args: CVarArg...) {
+/// The developer outputs retain their existing settings, formatting and rotation behavior. Consumer
+/// persistence is evaluated first and independently, so disabling OSLog, NSLog or trace files does not
+/// disable troubleshooting history. The consumer store may suppress routine or repeated operational
+/// facts that do not add support value.
+///
+/// - Parameters:
+///   - message: Developer format string. It may contain private operational data and is never copied
+///     into the consumer history.
+///   - log: OSLog category instance used by the developer output.
+///   - category: Category text retained in NSLog and trace-file output.
+///   - type: Developer log severity.
+///   - troubleshooting: Optional typed, consumer-safe fact. This is the only bridge to the consumer
+///     store. `message`, variadic arguments, URLs and `Error` values never cross that boundary.
+///   - args: Developer formatting arguments, with the existing maximum of ten.
+///
+/// Existing call sites need no changes. A call opts in only when it can construct a safe typed entry.
+func trace(
+    _ message: StaticString,
+    log: OSLog,
+    category: String,
+    type: OSLogType,
+    troubleshooting: TroubleshootingLogEntry? = nil,
+    _ args: CVarArg...
+) {
+
+    // A call site must explicitly supply a typed troubleshooting entry. Never derive consumer
+    // text from `message` or `args`: developer traces can contain URLs, identifiers, raw server
+    // responses and other information that is inappropriate for a public support post.
+    if let troubleshooting {
+        TroubleshootingLogStore.shared.record(troubleshooting)
+    }
 
     // initialize traceFileName if needed
     if traceFileName ==  nil {
@@ -274,6 +299,10 @@ class Trace {
     
     /// BluetoothPeripheralManager to use
     private static var bluetoothPeripheralManager: BluetoothPeripheralManager?
+
+    /// `initialize` may be called again as app services are rebuilt. Keep one clear process-start
+    /// marker rather than making a service restart look like a full app relaunch.
+    private static var didRecordTroubleshootingStart = false
     
     private static let paragraphSeperator = "\n===================================================\n"
     
@@ -281,7 +310,8 @@ class Trace {
         
         if let path = Bundle.main.path(forResource: "Info", ofType: "plist") {
             
-            if let createdDate = try! FileManager.default.attributesOfItem(atPath: path)[.creationDate] as? Date {
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: path),
+               let createdDate = attributes[.creationDate] as? Date {
                 
                 return createdDate
                 
@@ -289,7 +319,7 @@ class Trace {
             
         }
         
-        return Date() // Should never execute
+        return Date() // file metadata may be unavailable
         
     }
     
@@ -297,7 +327,8 @@ class Trace {
         
         if let documentsFolder = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).last {
             
-            if let installDate = try! FileManager.default.attributesOfItem(atPath: documentsFolder.path)[.creationDate] as? Date {
+            if let attributes = try? FileManager.default.attributesOfItem(atPath: documentsFolder.path),
+               let installDate = attributes[.creationDate] as? Date {
                 
                 return installDate
                 
@@ -305,7 +336,7 @@ class Trace {
             
         }
         
-        return Date() // Should never execute
+        return Date() // file metadata may be unavailable
         
     }
     
@@ -314,6 +345,17 @@ class Trace {
     static func initialize(coreDataManager: CoreDataManager?) {
         
         self.coreDataManager = coreDataManager
+
+        if !didRecordTroubleshootingStart {
+            didRecordTroubleshootingStart = true
+            trace(
+                "application tracing initialized",
+                log: log,
+                category: ConstantsLog.debuglogging,
+                type: .info,
+                troubleshooting: .standard(.app(.started))
+            )
+        }
         
     }
     
@@ -348,12 +390,12 @@ class Trace {
         // master or follower mode?
         traceInfo.appendStringAndNewLine("\nCGM Data Source: " + (UserDefaults.standard.isMaster ? "Master" : UserDefaults.standard.followerDataSourceType.descriptionForLogging()))
         traceInfo.appendStringAndNewLine("    Measurement unit: " + (UserDefaults.standard.bloodGlucoseUnitIsMgDl ? Texts_Common.mgdl : Texts_Common.mmol))
-        
+
         if UserDefaults.standard.isMaster {
             traceInfo.appendStringAndNewLine("    Upload master values to Nightscout: " + UserDefaults.standard.masterUploadDataToNightscout.description)
             
             if let cgmTransmitterTypeAsString = UserDefaults.standard.cgmTransmitterTypeAsString {
-                traceInfo.appendStringAndNewLine("    Transmitter type: " + cgmTransmitterTypeAsString)
+                traceInfo.appendStringAndNewLine("    Active transmitter type: " + cgmTransmitterTypeAsString)
             }
             
         } else {
@@ -382,6 +424,15 @@ class Trace {
                 traceInfo.appendStringAndNewLine("    Upload Share follower values to Nightscout: " + UserDefaults.standard.followerUploadDataToNightscout.description)
             }
         }
+
+        // BG post-processing can materially change the values shown and exported by xDrip4iOS.
+        // Keep this as a separate section after the complete data-source block. Reuse the same
+        // controlled descriptions as the Activity Log sharing header so an issue report always
+        // shows adjustment, smoothing and five-minute reduction together.
+        traceInfo.appendStringAndNewLine("\nBG post-processing settings:")
+        for processingLine in TroubleshootingLogAppInfo.current().processingLines {
+            traceInfo.appendStringAndNewLine("    " + processingLine)
+        }
         
         traceInfo.appendStringAndNewLine("\nNotifications settings:")
         traceInfo.appendStringAndNewLine("    Show BG in notifications: " + UserDefaults.standard.showReadingInNotification.description)
@@ -409,7 +460,7 @@ class Trace {
         traceInfo.appendStringAndNewLine("    Show statistics: " + UserDefaults.standard.showStatistics.description)
         traceInfo.appendStringAndNewLine("    Statistics days: " + UserDefaults.standard.daysToUseStatistics.description)
         traceInfo.appendStringAndNewLine("    Time in Range type: " + UserDefaults.standard.timeInRangeType.description)
-        traceInfo.appendStringAndNewLine("    Show HbA1c in mmols/mol: " + UserDefaults.standard.useIFCCA1C.description)
+        traceInfo.appendStringAndNewLine("    HbA1c to mmols/mol: " + UserDefaults.standard.useIFCCA1C.description)
           
         traceInfo.appendStringAndNewLine("\nNightscout settings:")
         traceInfo.appendStringAndNewLine("    Nightscout enabled: " + UserDefaults.standard.nightscoutEnabled.description)
@@ -445,17 +496,6 @@ class Trace {
             traceInfo.appendStringAndNewLine("    Speak interval: " + UserDefaults.standard.speakInterval.description + " minutes")
         }
         
-        traceInfo.appendStringAndNewLine("\nApple Watch settings:")
-        traceInfo.appendStringAndNewLine("    Show values in complications: " + UserDefaults.standard.showDataInWatchComplications.description)
-        if let agreementDate = UserDefaults.standard.watchComplicationUserAgreementDate {
-            traceInfo.appendStringAndNewLine("    User agreement date: " + agreementDate.toStringForTrace(timeStyle: .short, dateStyle: .medium) + " (" + agreementDate.daysAndHoursAgo(appendAgo: true, forTrace: true) + ")")
-            if let remainingComplicationUserInfoTransfers = UserDefaults.standard.remainingComplicationUserInfoTransfers {
-                traceInfo.appendStringAndNewLine("    Remaining complication updates: " + remainingComplicationUserInfoTransfers.description + " / 50")
-            }
-        } else {
-            traceInfo.appendStringAndNewLine("    User agreement date: nil")
-        }
-                                             
         traceInfo.appendStringAndNewLine("\nCalendar events settings:")
         traceInfo.appendStringAndNewLine("    Create calendar events: " + UserDefaults.standard.createCalendarEvent.description)
         if UserDefaults.standard.createCalendarEvent {
@@ -484,8 +524,8 @@ class Trace {
         traceInfo.appendStringAndNewLine("    OS log enabled: " + UserDefaults.standard.OSLogEnabled.description)
         traceInfo.appendStringAndNewLine("    Suppress unlock payload: " + UserDefaults.standard.suppressUnLockPayLoad.description)
         traceInfo.appendStringAndNewLine("    OS-AID share type: " + UserDefaults.standard.loopShareType.description)
-        traceInfo.appendStringAndNewLine("    OS-AID share every 5 mins?: " + UserDefaults.standard.shareToLoopOnceEvery5Minutes.description)
         traceInfo.appendStringAndNewLine("    LibreLinkUp version: " + (UserDefaults.standard.libreLinkUpVersion?.description ?? "nil"))
+        traceInfo.appendStringAndNewLine("    CareLink version: " + (UserDefaults.standard.careLinkVersion?.description ?? "nil"))
         traceInfo.appendStringAndNewLine("    CAGE max hours: " + UserDefaults.standard.CAGEMaxHours.description + " (default: " + ConstantsHomeView.CAGEDefaultMaxHours.description + ")")
         traceInfo.appendStringAndNewLine("    StandBy night mode enabled: " + UserDefaults.standard.allowStandByHighContrast.description)
         traceInfo.appendStringAndNewLine("    StandBy big numbers enabled: " + UserDefaults.standard.forceStandByBigNumbers.description)
@@ -535,7 +575,12 @@ class Trace {
             traceInfo.appendStringAndNewLine("List of Bluetooth Peripherals:")
             
             for blePeripheral in bLEPeripheralAccessor.getBLEPeripherals() {
-                traceInfo.appendStringAndNewLine("\n    Name: " + blePeripheral.name)
+                // Mark the peripheral currently selected for connection directly in the list. The
+                // following sentence already exposes `shouldconnect`, but the suffix makes the
+                // active CGM device immediately visible when an issue report contains several old
+                // or temporarily disconnected transmitters.
+                let activeDeviceSuffix = blePeripheral.shouldconnect ? " <--- (active CGM device)" : ""
+                traceInfo.appendStringAndNewLine("\n    Name: " + blePeripheral.name + activeDeviceSuffix)
                 traceInfo.appendStringAndNewLine("        Address: " + blePeripheral.address)
                 if let alias = blePeripheral.alias {
                     traceInfo.appendStringAndNewLine("        Alias: " + alias)
@@ -581,7 +626,16 @@ class Trace {
                             
                             traceInfo.appendStringAndNewLine("        Firmware: " + (dexcomG5.firmwareVersion?.description ?? "nil"))
                             
-                            traceInfo.appendStringAndNewLine("        Use With Other App: " + dexcomG5.useOtherApp.description)
+                            traceInfo.appendStringAndNewLine("        Connection mode: " + TroubleshootingDexcomConnectionMode(useOtherApp: dexcomG5.useOtherApp).name)
+
+                            let bluetoothSlot = dexcomG5.effectiveDexcomG6BluetoothSlot()
+                            traceInfo.appendStringAndNewLine(
+                                "        Bluetooth channel: "
+                                    + TroubleshootingDexcomBluetoothChannel(bluetoothSlot).name
+                                    + " (0x"
+                                    + String(format: "%02X", bluetoothSlot.rawValue)
+                                    + ")"
+                            )
                             
                             traceInfo.appendStringAndNewLine("        Is Anubis?: " + dexcomG5.isAnubis.description)
                             
@@ -590,6 +644,7 @@ class Trace {
                             // if needed additional specific info can be added
                             traceInfo.appendStringAndNewLine("        Voltage A: " + dexcomG5.voltageA.description + "0mV")
                             traceInfo.appendStringAndNewLine("        Voltage B: " + dexcomG5.voltageB.description + "0mV")
+                            traceInfo.appendStringAndNewLine("        Battery status: " + DexcomBatteryStatus(voltageB: Int(dexcomG5.voltageB), family: .g5).rawValue)
                             
                         }
                         
@@ -613,7 +668,6 @@ class Trace {
                         if blePeripheral.libre2 != nil {
                             
                             traceInfo.appendStringAndNewLine("        Type: " + bluetoothPeripheralType.rawValue)
-                            traceInfo.appendStringAndNewLine("    Smooth Libre readings: " + UserDefaults.standard.smoothLibreValues.description)
                             
                         }
                         
@@ -621,6 +675,10 @@ class Trace {
                         if blePeripheral.libre2heartbeat != nil {
                             
                             traceInfo.appendStringAndNewLine("        Type: " + bluetoothPeripheralType.rawValue)
+                            // Report this device's saved choice; an existing connection may still use
+                            // the previous mode until it reconnects, as recorded in the session trace.
+                            let subscriptions = GenericHeartbeatSettings.load(blePeripheral.address).mode
+                            traceInfo.appendStringAndNewLine("        Heartbeat subscriptions (configured): " + subscriptions.logDescription)
                             
                         }
                         
@@ -639,13 +697,62 @@ class Trace {
                         }
 
                     case .DexcomG7Type:
-                        if blePeripheral.dexcomG7 != nil {
+                        if let dexcomG7 = blePeripheral.dexcomG7 {
                             
                             traceInfo.appendStringAndNewLine("        Type: " + bluetoothPeripheralType.rawValue)
+                            traceInfo.appendStringAndNewLine("        Sensor start date: " + (dexcomG7.sensorStartDate?.toStringForTrace(timeStyle: .short, dateStyle: .medium) ?? "nil") + " (" + (dexcomG7.sensorStartDate?.daysAndHoursAgo(appendAgo: true, forTrace: true) ?? "nil") + ")")
+                            traceInfo.appendStringAndNewLine("        Sensor status: " + (dexcomG7.sensorStatus ?? "nil"))
                             
-                            traceInfo.appendStringAndNewLine("        15-day G7: " + (blePeripheral.name.startsWith("DXCM") ? UserDefaults.standard.is15DayDexcomG7.description : "n/a (not a G7)"))
+                            traceInfo.appendStringAndNewLine(
+                                "        Sensor lifetime: "
+                                    + DexcomG7SensorLifetime.diagnosticDescription(
+                                        dexcomG7.sensorSessionLength?.doubleValue
+                                    )
+                            )
+                            // Include the complete saved applicator scan beside the Bluetooth
+                            // diagnostics. This allows an issue report to confirm which physical
+                            // sensor was scanned and whether its printed dates were decoded
+                            // correctly. These dates contain no time of day, so UTC formatting
+                            // preserves the exact calendar day printed on the applicator.
+                            traceInfo.appendStringAndNewLine("        Sensor code: " + (dexcomG7.sensorCode ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Sensor lot: " + (dexcomG7.sensorLotNumber ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Sensor serial: " + (dexcomG7.sensorSerialNumber ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Product identifier: " + (dexcomG7.sensorProductIdentifier ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Manufacture date: " + (dexcomG7.sensorManufactureDate?.toDateOnlyStringForTrace() ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Expiry date: " + (dexcomG7.sensorExpirationDate?.toDateOnlyStringForTrace() ?? "nil"))
+                            // Include saved protocol diagnostics even when they have not arrived yet.
+                            // Explicit nil and zero values make issue reports show whether the sensor
+                            // answered. The applicator code is included above because it is now part
+                            // of the requested saved-sensor diagnostics.
+                            traceInfo.appendStringAndNewLine("        Firmware: " + (dexcomG7.firmwareVersion ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Firmware build: " + (dexcomG7.firmwareBuildVersion?.stringValue ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Version code: " + (dexcomG7.firmwareVersionCode?.stringValue ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Battery protocol status: " + dexcomG7.batteryStatus.description)
+                            traceInfo.appendStringAndNewLine("        Voltage A: " + DexcomBatteryStatus.millivolts(fromRawVoltage: Int(dexcomG7.voltageA)).description + " mV")
+                            traceInfo.appendStringAndNewLine("        Voltage B: " + DexcomBatteryStatus.millivolts(fromRawVoltage: Int(dexcomG7.voltageB)).description + " mV")
+                            traceInfo.appendStringAndNewLine("        Battery resistance: " + dexcomG7.batteryResist.description)
+                            traceInfo.appendStringAndNewLine("        Battery last read: " + (dexcomG7.batteryLastReadDate?.toStringForTrace(timeStyle: .short, dateStyle: .medium) ?? "nil"))
+                            traceInfo.appendStringAndNewLine("        Battery classification: " + DexcomBatteryStatus(voltageB: Int(dexcomG7.voltageB), family: .g7).rawValue)
+                            traceInfo.appendStringAndNewLine("        Connection mode: " + TroubleshootingDexcomConnectionMode(useOtherApp: dexcomG7.useOtherApp).name)
+
+                            let bluetoothSlot = dexcomG7.effectiveDexcomG7BluetoothSlot()
+                            traceInfo.appendStringAndNewLine(
+                                "        Bluetooth channel: "
+                                    + TroubleshootingDexcomBluetoothChannel(bluetoothSlot).name
+                                    + " (0x"
+                                    + String(format: "%02X", bluetoothSlot.rawValue)
+                                    + ")"
+                            )
                         }
-                        
+
+                    case .MedtrumTouchCareNanoType:
+                        if let medtrumNano = blePeripheral.medtrumTouchCareNano {
+
+                            traceInfo.appendStringAndNewLine("        Type: " + bluetoothPeripheralType.rawValue)
+                            if let firmware = medtrumNano.firmware {
+                                traceInfo.appendStringAndNewLine("        Firmware: " + firmware)
+                            }
+                        }
                     }
                 }
                 

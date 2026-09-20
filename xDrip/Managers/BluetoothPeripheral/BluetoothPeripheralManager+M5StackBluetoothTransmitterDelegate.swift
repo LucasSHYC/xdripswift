@@ -9,6 +9,7 @@ extension BluetoothPeripheralManager: M5StackBluetoothTransmitterDelegate {
         guard let index = bluetoothTransmitters.firstIndex(of: m5StackBluetoothTransmitter), let m5Stack = bluetoothPeripherals[index] as? M5Stack else {return}
         
         m5Stack.batteryLevel = level
+        batteryHistoryManager.record(peripheralObjectID: m5Stack.blePeripheral.objectID, observation: .percentage(value: level, producer: .m5Stack))
         
     }
     
@@ -26,10 +27,7 @@ extension BluetoothPeripheralManager: M5StackBluetoothTransmitterDelegate {
             guard let index = bluetoothTransmitters.firstIndex(of: m5StackBluetoothTransmitter), let m5Stack = bluetoothPeripherals[index] as? M5Stack else {return}
             
             // don't try to reconnect after disconnecting
-            m5Stack.blePeripheral.shouldconnect = false
-            
-            // store in core data
-            coreDataManager.saveChanges()
+            setConnectionEnabled(false, for: m5Stack)
             
             // disconnect
             disconnect(fromBluetoothPeripheral: m5Stack)
@@ -46,10 +44,7 @@ extension BluetoothPeripheralManager: M5StackBluetoothTransmitterDelegate {
         guard let index = bluetoothTransmitters.firstIndex(of: m5StackBluetoothTransmitter), let m5Stack = bluetoothPeripherals[index] as? M5Stack else {return}
         
         // don't try to reconnect after disconnecting
-        m5Stack.blePeripheral.shouldconnect = false
-        
-        // store in core data
-        coreDataManager.saveChanges()
+        setConnectionEnabled(false, for: m5Stack)
         
         // disconnect
         disconnect(fromBluetoothPeripheral: m5Stack)
@@ -80,8 +75,7 @@ extension BluetoothPeripheralManager: M5StackBluetoothTransmitterDelegate {
         guard let index = bluetoothTransmitters.firstIndex(of: m5StackBluetoothTransmitter), let m5Stack = bluetoothPeripherals[index] as? M5Stack else {return}
         
         // should not try to reconnect, wait till user decide to push the "always connect button"
-        m5Stack.blePeripheral.shouldconnect = false
-        coreDataManager.saveChanges()
+        setConnectionEnabled(false, for: m5Stack)
         
         // disconnect
         disconnect(fromBluetoothPeripheral: m5Stack)
@@ -159,41 +153,6 @@ extension BluetoothPeripheralManager: M5StackBluetoothTransmitterDelegate {
         
         // send rotation
         if !m5StackBluetoothTransmitter.writeRotation(rotation: Int(m5Stack.rotation)) {success = false}
-        
-        // send connectToWiFi
-        if !m5StackBluetoothTransmitter.writeConnectToWiFi(connect: m5Stack.connectToWiFi) {success = false}
-        
-        // send WiFiSSID's
-        if let wifiName = UserDefaults.standard.m5StackWiFiName1 {
-            if !m5StackBluetoothTransmitter.writeWifiName(name: wifiName, number: 1) {success = false}
-        }
-        if let wifiName = UserDefaults.standard.m5StackWiFiName2 {
-            if !m5StackBluetoothTransmitter.writeWifiName(name: wifiName, number: 2) {success = false}
-        }
-        if let wifiName = UserDefaults.standard.m5StackWiFiName3 {
-            if !m5StackBluetoothTransmitter.writeWifiName(name: wifiName, number: 3) {success = false}
-        }
-        
-        // send WiFiPasswords
-        if let wifiPassword = UserDefaults.standard.m5StackWiFiPassword1 {
-            if !m5StackBluetoothTransmitter.writeWifiPassword(password: wifiPassword, number: 1) {success = false}
-        }
-        if let wifiPassword = UserDefaults.standard.m5StackWiFiPassword2 {
-            if !m5StackBluetoothTransmitter.writeWifiPassword(password: wifiPassword, number: 2) {success = false}
-        }
-        if let wifiPassword = UserDefaults.standard.m5StackWiFiPassword3 {
-            if !m5StackBluetoothTransmitter.writeWifiPassword(password: wifiPassword, number: 3) {success = false}
-        }
-        
-        // send nightscout url
-        if let url = UserDefaults.standard.nightscoutUrl {
-            if !m5StackBluetoothTransmitter.writeNightscoutUrl(url: url) {success = false}
-        }
-        
-        // send nightscout token
-        if let token = UserDefaults.standard.nightscoutAPIKey {
-            if !m5StackBluetoothTransmitter.writeNightscoutAPIKey(apiKey: token) {success = false}
-        }
         
         // return success
         return success

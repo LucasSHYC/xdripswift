@@ -13,26 +13,179 @@ enum ConstantsGlucoseChartSwiftUI {
     // ------------------------------------------
     // ----- SwiftUI Glucose Chart --------------
     // ------------------------------------------
-    // default chart properties for all chart types
+    // Display-only therapy styling and relative scale. This ratio is not used for calculations.
+    static let therapyPlotMaximumIOB: Double = 15
+    static let therapyPlotMaximumCOB: Double = 70
+    static let therapyPlotReferenceHeightInMgDl: Double = 100
+    static let minimumChartValueWithBasal: Double = -10
+    static let minimumChartValueWithBasal24Hours: Double = 0
+
+    /// Shared bottom space for basal data and visible therapy plots.
+    static func minimumChartValueWithBottomSpace(hours: Double) -> Double {
+        hours >= 24 ? minimumChartValueWithBasal24Hours : minimumChartValueWithBasal
+    }
+
+    static let therapyPlotFillOpacity: Double = 0.17
+    static let therapyPlotLineOpacity: Double = 0.7
+    // Make therapy less prominent when it shares the bottom area with visible basal.
+    static let therapyPlotBottomBasalOpacityMultiplier: Double = 0.7
+    // Scale both curves and their fills around zero, preserving the shared carbs-to-insulin ratio.
+    static let therapyPlotHeightMultiplier: Double = 0.7
+    static let therapyPlotCarbsPerInsulinUnit: Double = 7
+
+    static func xAxisDates(from startDate: Date, to endDate: Date, everyHours: Int) -> [Date] {
+        // Keep labels anchored to real clock hours so a small scroll cannot switch between odd and
+        // even hour labels.
+        let hourInterval = max(everyHours, 1)
+        let calendar = Calendar.current
+        let startOfVisibleHourComponents = calendar.dateComponents([.year, .month, .day, .hour], from: startDate)
+
+        guard var date = calendar.date(from: startOfVisibleHourComponents) else { return [] }
+
+        if date < startDate, let nextHourDate = calendar.date(byAdding: .hour, value: 1, to: date) {
+            date = nextHourDate
+        }
+
+        var dates = [Date]()
+
+        while date <= endDate {
+            let hour = calendar.component(.hour, from: date)
+
+            if hourInterval == 1 || hour % hourInterval == 0 {
+                dates.append(date)
+            }
+
+            guard let nextDate = calendar.date(byAdding: .hour, value: 1, to: date), nextDate > date else {
+                break
+            }
+
+            date = nextDate
+        }
+
+        return dates
+    }
+
+    // shared chart defaults
     static let yAxisLineSize: Double = 0.8
+    static let yAxisAbsoluteMinimumChartValueInMgDl: Double = 38
+    static let yAxisDomainPaddingInMgDl: Double = 6
+    static let yAxisBasalDomainPaddingInMgDl: Double = 0
     static let yAxisLabelOffsetX: CGFloat = 0
     static let yAxisLabelOffsetY: CGFloat = 0
-    
+    static let yAxisLabelWidth: CGFloat = 38
+    static let yAxisLabelPrimaryColor = Color(.colorPrimary)
+    static let yAxisLabelSecondaryColor = Color(.colorSecondary)
+    static let yAxisContextGridLineColor = Color(white: 0.3)
     static let yAxisLowHighLineColor = Color(white: 0.7)
     static let yAxisUrgentLowHighLineColor = Color(white: 0.6)
     
     static let xAxisGridLineColor = Color(white: 0.4)
-    static let xAxisLabelOffsetX: CGFloat = -12
+    static let xAxisLabelColor = Color(.colorSecondary)
+    // separate midnight styling keeps day-boundary markers visible without changing normal gridlines
+    static let xAxisMidnightGridLineColor = Color(white: 0.35)
+    static let xAxisMidnightGridLineSize: Double = 1.25
+    static let chartPlotBorderColor = Color(white: 0.5)
+    static let chartPlotBorderLineWidth: Double = 1.0
+    // x-axis labels use a fixed width, so the negative offset visually centers the hour over its gridline
+    static let xAxisLabelOffsetX: CGFloat = -25
     static let xAxisLabelOffsetY: CGFloat = -2
+    static let xAxisLabelWidth: CGFloat = 44
     static let xAxisIntervalBetweenValues: Int = 1
     static let xAxisLabelFirstClippingInMinutes: Double = 8 * 60
     static let xAxisLabelLastClippingInMinutes: Double = 12 * 60
     
     static let cornerRadius: CGFloat = 0
-    
     static let backgroundColor: Color = .black
     
+    // Swift Charts `symbolSize` is area-based, so small changes here make a visible but controlled
+    // difference to point diameter without changing every chart type's base size.
+    static let glucosePointSymbolSizeMultiplier: Double = 1.2
+
+    // AGP background styling
+    // keep these values in the shared glucose chart constants so the same renderer can be used
+    // for normal glucose points with or without an AGP background
+    static let agpOuterBand = Color.cyan.opacity(0.32)
+    static let agpInnerBand = Color.cyan.opacity(0.36)
+    static let agpMedian = Color.cyan.opacity(0.85)
+    static let agpMedianLineWidth: Double = 1.2
+
+    // use recent history for the Watch app AGP background because it is a current-context chart
+    static let agpDaysBackWatchApp: Int = 7
+
+    // reduce the AGP background opacity on the Watch app so the glucose points stay dominant
+    static let agpOpacityMultiplierWatchApp: Double = 0.8
     
+    
+    // ------------------------------------------
+    // ----- Main Chart Context -----------------
+    // ------------------------------------------
+    // main chart y-axis context values
+    //
+    // The main Home chart always keeps fixed vertical context, even when visible glucose and
+    // treatment values are clustered into a smaller range. Compact charts remain data-driven.
+    static let yAxisLowContextGridLineInMgDl: Double = 40
+    static let yAxisLowContextMinimumUrgentLowInMgDl: Double = 50
+    static let yAxisMainChartContextTopPaddingInMgDl: Double = 8
+    static let yAxisUpperContextGridLinesInMgDl = [150.0, 200.0, 250.0, 300.0, 350.0, 400.0]
+    static let yAxisMainChartObjectiveLabelFontSize: CGFloat = 15
+    static let yAxisMainChartSecondaryLabelFontSize: CGFloat = 14
+    // the main y-axis keeps a fixed trailing lane for each unit. Values in mmol/L need room for
+    // four-character labels such as "10.0", while mg/dL normally uses three digits
+    static let yAxisMainChartLabelWidthInMgDl: CGFloat = 30
+    static let yAxisMainChartLabelWidthInMmol: CGFloat = 38
+    static let yAxisMainChartLabelOffsetX: CGFloat = 0
+    static let yAxisMainChartObjectiveLabelColor = Color.white
+    static let yAxisMainChartDimmedLabelColor = Color.gray
+
+
+    // ------------------------------------------
+    // ----- Mini Chart -------------------------
+    // ------------------------------------------
+    static let miniChartViewWidth: CGFloat = 300
+    static let miniChartViewHeight: CGFloat = 48
+    static let miniChartHoursToShow: Double = 24
+    static let miniChartGlucoseCircleDiameter: Double = 3
+    static let miniChartBackgroundColor: Color = .black
+    static let miniChartYAxisLineSize: Double = 0.5
+    static let miniChartXAxisMidnightLineColor = Color(white: 0.3)
+    static let miniChartXAxisMidnightLineSize: Double = 1.25
+
+    // optional overview window, used by the home mini-chart to provide
+    // a Nightscout style overview context when scrolling the main chart
+    //
+    // If a chart state supplies overlay start/end dates, the renderer dims the plot area outside
+    // that window and draws visible edge bars. Normal charts will never render this unless the
+    // optional state values are present.
+    static let overlayWindowShadeColor = Color.black.opacity(0.4)
+    static let overlayWindowTintColor = Color(white: 0.3).opacity(0.4)
+    static let overlayWindowEdgeColor = Color.blue.opacity(0.6)
+    static let overlayWindowEdgeLineWidth: CGFloat = 2.0
+    static let overlayWindowCurrentTimeEdgeTolerance: TimeInterval = 5 * 60
+
+    /// Converts the mini-chart's desired edge clearance from points into time.
+    ///
+    /// The same interval extends the rendered x-axis after `now` and keeps overview-driven dragging
+    /// clear of the leading rounded corner. It does not extend the glucose-data range.
+    ///
+    /// For visible duration `D`, chart width `W` and desired point inset `m`, the `now` edge must
+    /// satisfy `D / (D + padding) = (W - m) / W`. Solving gives
+    /// `padding = D * m / (W - m)`.
+    static func miniChartEdgeInsetTimeInterval(
+        visibleTimeInterval: TimeInterval,
+        chartWidth: CGFloat
+    ) -> TimeInterval {
+        let edgeInsetWidth = ConstantsHomeView.standardCornerRadius
+        let widthBeforeInset = chartWidth - edgeInsetWidth
+
+        guard visibleTimeInterval > 0, widthBeforeInset > 0 else { return 0 }
+
+        return visibleTimeInterval * Double(edgeInsetWidth / widthBeforeInset)
+    }
+
+    // muted enough to stay behind glucose points, but visible enough during chart scrolling
+    static let sensorNoiseWarningBandColor = Color.yellow.opacity(0.22)
+    static let sensorNoiseUrgentBandColor = Color.red.opacity(0.27)
+
     // ------------------------------------------
     // ----- Live Activities --------------------
     // ------------------------------------------
@@ -136,9 +289,9 @@ enum ConstantsGlucoseChartSwiftUI {
     static let paddingSiriGlucoseIntent: Double = 10
     static let backgroundColorSiriGlucoseIntent: Color = .black
     
-    
+
     // ------------------------------------------
-    // ----- Notification Charts -----------
+    // ----- Notification Charts ----------------
     // ------------------------------------------
     // iOS notification chart - thumbnail image
     static let viewWidthNotificationThumbnailImage: CGFloat = 80

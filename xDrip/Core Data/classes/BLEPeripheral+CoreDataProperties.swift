@@ -15,6 +15,10 @@ extension BLEPeripheral {
     
     /// should app try to connect to the device yes or no
     @NSManaged public var shouldconnect: Bool
+
+    /// Whether this peripheral has completed a Bluetooth connection since its latest activation.
+    /// Routine intermittent disconnects deliberately preserve this value.
+    @NSManaged public var hasConnectedSinceActivation: Bool
     
     /// alias chosen by user, to recognize the device or to distinguish two devices that have the same name
     @NSManaged public var alias: String?
@@ -58,11 +62,17 @@ extension BLEPeripheral {
     
     // a BLEPeripheral should only have one of dexcomG5, m5Stack, ...
     @NSManaged public var dexcomG7: DexcomG7?
+
+    // a BLEPeripheral should only have one of dexcomG5, m5Stack, ...
+    @NSManaged public var medtrumTouchCareNano: MedtrumTouchCareNano?
     
     /// sensorSerialNumber of last sensor that was read
     @NSManaged public var sensorSerialNumber: String?
 
     /// timestamp when connection changed to connected or not connected
     @NSManaged public var lastConnectionStatusChangeTimeStamp: Date?
+
+    /// Genuine battery readings retained for this exact saved peripheral.
+    @NSManaged public var batteryHistorySamples: Set<BatteryHistorySample>?
     
 }

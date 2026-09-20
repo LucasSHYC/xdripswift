@@ -83,17 +83,6 @@ extension Date {
 		return self.ISOStringFromDate(reuseDateFormatter: Date.ISODateFormatter())
 	}
     
-    /// Returns a short date string for use in the filename of the json export file - this should reflect the user's local time
-    ///
-    /// Example return: "20220112-2304"
-    func jsonFilenameStringFromDate() -> String {
-        let dateFormatter = DateFormatter()
-        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
-        dateFormatter.dateFormat = "yyyyMMdd-HHmm"
-        
-        return dateFormatter.string(from: self)
-    }
-    
     /// date to string, with date and time as specified by one of the values in DateFormatter.Style
     func toString(timeStyle: DateFormatter.Style, dateStyle: DateFormatter.Style) -> String {
         let dateFormatter = DateFormatter()
@@ -112,16 +101,39 @@ extension Date {
         dateFormatter.dateStyle = dateStyle
         return dateFormatter.string(from: self)
     }
+
+    /// Returns a stable calendar date for developer diagnostics.
+    ///
+    /// Applicator manufacture and expiry values do not contain a time of day. They are stored at
+    /// midnight UTC so this formatter must also use UTC. Formatting them in the device time zone
+    /// could otherwise move the printed date back one day for users west of UTC.
+    func toDateOnlyStringForTrace() -> String {
+        let dateFormatter = DateFormatter()
+        dateFormatter.calendar = Calendar(identifier: .gregorian)
+        dateFormatter.locale = Locale(identifier: "en_US_POSIX")
+        dateFormatter.timeZone = TimeZone(secondsFromGMT: 0)
+        dateFormatter.dateFormat = "yyyy-MM-dd"
+        return dateFormatter.string(from: self)
+    }
     
     /// date to string, with date and time as specified by one of the values in DateFormatter.Style and formatted to match the user's locale
     /// Example return: "31/12/2022, 17:48" (spain locale)
     /// Example return: "12/31/2022, 5:48 pm" (us locale)
-    func toStringInUserLocale(timeStyle: DateFormatter.Style, dateStyle: DateFormatter.Style, showTimeZone: Bool? = false) -> String {
+    /// The optional time zone is only needed when the source contains a calendar date without a time of day.
+    /// For example, a Dexcom applicator date is stored at midnight UTC. Displaying that value in a time zone
+    /// behind UTC would otherwise show the previous calendar day even though the decoded date is correct.
+    func toStringInUserLocale(timeStyle: DateFormatter.Style, dateStyle: DateFormatter.Style, showTimeZone: Bool? = false, timeZone: TimeZone? = nil) -> String {
         let dateFormatter = DateFormatter()
         dateFormatter.timeStyle = timeStyle
         dateFormatter.dateStyle = dateStyle
         dateFormatter.amSymbol = ConstantsUI.timeFormatAM
         dateFormatter.pmSymbol = ConstantsUI.timeFormatPM
+
+        // Leave the formatter on the user's current time zone unless the caller is displaying a date-only value.
+        // This preserves the existing behaviour for every caller while allowing source dates to retain their day.
+        if let timeZone {
+            dateFormatter.timeZone = timeZone
+        }
         
         let showUserTimeZone = showTimeZone ?? false
         

@@ -1,6 +1,5 @@
 import Foundation
 import CoreData
-import UIKit
 
 public class BgReading: NSManagedObject {
 
@@ -15,6 +14,7 @@ public class BgReading: NSManagedObject {
         self.calibration = calibration
         self.rawData = rawData
         self.deviceName = deviceName
+        self.backfilledAt = nil
         
         ageAdjustedRawValue = 0
         calibrationFlag = false
@@ -26,6 +26,8 @@ public class BgReading: NSManagedObject {
         ra = 0
         rb = 0
         rc = 0 
+        adjustedValue = nil
+        smoothedValue = nil
         hideSlope = false
         id = UniqueId.createEventId()
     }
@@ -41,9 +43,13 @@ public class BgReading: NSManagedObject {
         r += "\n" + indentation + "uniqueid = " + id
         r += "\n" + indentation + "a = " + a.description
         r += "\n" + indentation + "ageAdjustedRawValue = " + ageAdjustedRawValue.description
+        r += "\n" + indentation + "backfilledAt = " + (backfilledAt?.description ?? "nil")
         r += "\n" + indentation + "b = " + b.description
         r += "\n" + indentation + "c = " + c.description
         r += "\n" + indentation + "calculatedValue = " + calculatedValue.description
+        r += "\n" + indentation + "adjustedValue = " + (adjustedValue?.description ?? "nil")
+        r += "\n" + indentation + "smoothedValue = " + (smoothedValue?.description ?? "nil")
+        r += "\n" + indentation + "finalValue = " + finalValue.description
         r += "\n" + indentation + "calculatedValueSlope = " + calculatedValueSlope.description
         if let calibration = calibration {
             r += "\n" + indentation + "calibration = " + calibration.log("      ")
@@ -106,15 +112,16 @@ public class BgReading: NSManagedObject {
     /// creates string with bg value in correct unit or "HIGH" or "LOW", or other like ???
     func unitizedString(unitIsMgDl: Bool) -> String {
         var returnValue: String
+        let value = finalValue
         
-        if (calculatedValue >= 400) {
+        if (value >= 400) {
             returnValue = Texts_Common.HIGH
-        } else if (calculatedValue >= 40) {
-            returnValue = calculatedValue.mgDlToMmolAndToString(mgDl: unitIsMgDl)
-        } else if (calculatedValue > 12) {
+        } else if (value >= 40) {
+            returnValue = value.mgDlToMmolAndToString(mgDl: unitIsMgDl)
+        } else if (value > 12) {
             returnValue = Texts_Common.LOW
         } else {
-            switch(calculatedValue) {
+            switch(value) {
             case 0:
                 returnValue = "??0"
                 break
@@ -159,8 +166,8 @@ public class BgReading: NSManagedObject {
             return "???"
         }
 
-        var previousValueInUserUnit = previousBgReading.calculatedValue.mgDlToMmol(mgDl: mgDl)
-        var actualValueInUserUnit = calculatedValue.mgDlToMmol(mgDl: mgDl)
+        var previousValueInUserUnit = previousBgReading.finalValue.mgDlToMmol(mgDl: mgDl)
+        var actualValueInUserUnit = finalValue.mgDlToMmol(mgDl: mgDl)
         
         // if the values are in mmol/L, then round them to the nearest decimal point in order to get the same precision out of the next operation
         if !mgDl {
@@ -209,7 +216,7 @@ public class BgReading: NSManagedObject {
     func bgRangeDescription() -> BgRangeDescription {
         
         // Prepare the bgReading value
-        let bgValue = self.calculatedValue.mgDlToMmol(mgDl: UserDefaults.standard.bloodGlucoseUnitIsMgDl)
+        let bgValue = self.finalValue.mgDlToMmol(mgDl: UserDefaults.standard.bloodGlucoseUnitIsMgDl)
         
         if (bgValue >= UserDefaults.standard.urgentHighMarkValueInUserChosenUnit
             || bgValue <= UserDefaults.standard.urgentLowMarkValueInUserChosenUnit){
@@ -227,6 +234,22 @@ public class BgReading: NSManagedObject {
         return BgRangeDescription.inRange
     }
     
+    /// calculates the trend using the nearest older reading with enough elapsed time
+    ///
+    /// very close readings can have a small glucose difference which becomes an extreme
+    /// per-minute slope. Using at least four minutes keeps the arrow based on trend over time.
+    func calculateSlope(lastBgReadings: [BgReading]) -> (Double, Bool) {
+        let minimumTimeInterval = TimeInterval(minutes: Double(ConstantsBGGraphBuilder.minSlopeInMinutes))
+
+        guard let lastBgReading = lastBgReadings
+            .filter({ timeStamp.timeIntervalSince($0.timeStamp) >= minimumTimeInterval })
+            .min(by: { timeStamp.timeIntervalSince($0.timeStamp) < timeStamp.timeIntervalSince($1.timeStamp) }) else {
+            return (0, true)
+        }
+
+        return calculateSlope(lastBgReading: lastBgReading)
+    }
+
     /// taken over form xdripplus
     ///
     /// - parameters:
@@ -235,11 +258,26 @@ public class BgReading: NSManagedObject {
     /// - returns:
     ///     - calculated slope and hideSlope
     func calculateSlope(lastBgReading:BgReading) -> (Double, Bool) {
-        if timeStamp == lastBgReading.timeStamp || timeStamp.toMillisecondsAsDouble() - lastBgReading.timeStamp.toMillisecondsAsDouble() > Double(ConstantsBGGraphBuilder.maxSlopeInMinutes * 60 * 1000) {
+        let timeIntervalInMinutes = timeStamp.timeIntervalSince(lastBgReading.timeStamp) / 60.0
+
+        // never create a trend from an equal, newer, very close or discontinuous reading
+        if timeIntervalInMinutes < Double(ConstantsBGGraphBuilder.minSlopeInMinutes) || timeIntervalInMinutes > Double(ConstantsBGGraphBuilder.maxSlopeInMinutes) {
             return (0, true)
         }
         
-        return ((lastBgReading.calculatedValue - calculatedValue) / (lastBgReading.timeStamp.toMillisecondsAsDouble() - timeStamp.toMillisecondsAsDouble()), false)
+        return ((lastBgReading.finalValue - finalValue) / (lastBgReading.timeStamp.toMillisecondsAsDouble() - timeStamp.toMillisecondsAsDouble()), false)
+    }
+
+    var finalValue: Double {
+        if let smoothedValue = smoothedValue?.doubleValue {
+            return smoothedValue
+        }
+        
+        if let adjustedValue = adjustedValue?.doubleValue {
+            return adjustedValue
+        }
+        
+        return calculatedValue
     }
     
     /// slopeName for upload to Nightscout
@@ -272,10 +310,89 @@ public class BgReading: NSManagedObject {
 // MARK: - SNAPSHOT STRUCT
 
 /// Thread/Queue-safe snapshot of a BgReading (detached from Core Data)
-public struct BgReadingSnapshot: Sendable {
+public struct BgReadingSnapshot: Sendable, Hashable {
     public let timeStamp: Date
     public let calculatedValue: Double
     public let rawData: Double
+    public let finalValue: Double
+    public let adjustedValue: Double?
+    public let smoothedValue: Double?
+    public let backfilledAt: Date?
+    public let calculatedValueSlope: Double
+    public let hideSlope: Bool
+    public let id: String
+    public let deviceName: String?
+    public let calibrationSnapshot: CalibrationSnapshot?
     public let sensorID: String?
     public let objectID: NSManagedObjectID
+
+    public func slopeArrow() -> String {
+        let slopeByMinute = calculatedValueSlope * 60000
+        
+        if slopeByMinute <= (-3.5) {
+            return "\u{2193}\u{2193}"
+        } else if slopeByMinute <= (-2) {
+            return "\u{2193}"
+        } else if slopeByMinute <= (-1) {
+            return "\u{2198}"
+        } else if slopeByMinute <= 1 {
+            return "\u{2192}"
+        } else if slopeByMinute <= 2 {
+            return "\u{2197}"
+        } else if slopeByMinute <= 3.5 {
+            return "\u{2191}"
+        } else {
+            return "\u{2191}\u{2191}"
+        }
+    }
+
+    public func slopeOrdinal() -> Int {
+        var ordinal = 0
+        let slopeByMinute = calculatedValueSlope * 60000
+
+        if !hideSlope {
+            if slopeByMinute <= (-3.5) {
+                ordinal = 7
+            } else if slopeByMinute <= (-2) {
+                ordinal = 6
+            } else if slopeByMinute <= (-1) {
+                ordinal = 5
+            } else if slopeByMinute <= 1 {
+                ordinal = 4
+            } else if slopeByMinute <= 2 {
+                ordinal = 3
+            } else if slopeByMinute <= 3.5 {
+                ordinal = 2
+            } else {
+                ordinal = 1
+            }
+        }
+
+        return ordinal
+    }
+    
+    func bgRangeDescription() -> BgRangeDescription {
+        let bgValue = finalValue.mgDlToMmol(mgDl: UserDefaults.standard.bloodGlucoseUnitIsMgDl)
+        
+        if (bgValue >= UserDefaults.standard.urgentHighMarkValueInUserChosenUnit
+            || bgValue <= UserDefaults.standard.urgentLowMarkValueInUserChosenUnit) {
+            return .urgent
+        }
+        
+        if (bgValue >= UserDefaults.standard.highMarkValueInUserChosenUnit
+            || bgValue <= UserDefaults.standard.lowMarkValueInUserChosenUnit) {
+            return .notUrgent
+        }
+        
+        return .inRange
+    }
+}
+
+public struct CalibrationSnapshot: Sendable, Hashable {
+    public let id: String
+    public let timeStamp: Date
+    public let slope: Double
+    public let intercept: Double
+    public let bg: Double
+    public let rawValue: Double
 }

@@ -47,7 +47,7 @@
 "stopSensorConfirmation" = "Oletko varma, että haluat pysäyttää sensorin?";
 
 /// When user needs to enter sensor code, to start firefly sensor
-"enterSensorCode" = "jos sinulla ei ole koodia, käytä 0000, mutta muista, että et saa lukemia ennen kuin olet kalibroinut";
+"enterSensorCode" = "Syötä anturin koodi käsin, skannaa anturin etiketti tai valitse kuva.\n\nJos sinulla ei ole koodia tai haluat käyttää lähettimessä jo käynnissä olevaa anturijaksoa, valitse Käytä ilman koodia.";
 
 /// status info : literally 'Sensor End'
 "sensorend" = "Sensori loppuu";
@@ -72,7 +72,7 @@
 "sensorDuration" = "Sensor Duration";
 
 /// nightscout is not enabled
-"nightscoutURLMissing" = "Nightscout URL missing";
+"nightscoutURLMissing" = "URL missing";
 
 /// ask the user to disconnect and reconnect the sensor
 "reconnectLibreDataSource" = "Disconnect and reconnect Libre sensor";
@@ -85,3 +85,114 @@
 
 /// no data source is enabled or connected
 "noDataSourceConnected" = "No CGM data source connected";
+
+"postProcessingFiveMinuteReadings" = "5-minute readings";
+"postProcessingAlgorithm" = "Algorithm";
+"sensorLifetimeRemainingFormat" = "%@ jäljellä";
+"postProcessingAlgorithmSavitzkyGolay" = "Savitzky-Golay";
+
+"sensorManagementNoiseTitle" = "Sensorin kohina";
+"sensorManagementNoiseShortTerm" = "Viimeiset 30 minuuttia";
+"sensorManagementNoiseLongTerm" = "Viimeiset 4 tuntia";
+"sensorManagementNoiseCollecting" = "Kerätään tietoja";
+"sensorManagementNoiseLow" = "Matala";
+"sensorManagementNoiseElevated" = "Kohonnut";
+"sensorManagementNoiseVeryHigh" = "Erittäin korkea";
+"sensorManagementNoiseExtreme" = "Äärimmäinen";
+"sensorManagementNoiseFlatline" = "Sensori on todennäköisesti vikaantunut.";
+"sensorNoiseWarningExtremeTitle" = "Äärimmäinen sensorin kohina";
+"sensorNoiseWarningPersistentTitle" = "Jatkuva sensorin kohina";
+"sensorNoiseWarningFlatlineTitle" = "Sensorin signaali on tasainen";
+"sensorNoiseHistoryTitle" = "Kohinahistoria";
+"sensorNoiseHistoryCurrentTitle" = "Nykyiset mittaukset";
+"sensorNoiseHistoryChartTitle" = "Kohina ajan kuluessa";
+"sensorNoiseHistoryRangeTitle" = "Aikaväli";
+"sensorNoiseHistoryDayRange" = "1d";
+"sensorNoiseHistoryThreeDayRange" = "3 pv";
+"sensorNoiseHistoryWeekRange" = "7 pv";
+"sensorNoiseHistoryAllRange" = "Kaikki";
+"sensorNoiseHistoryShortCompact" = "30 min";
+"sensorNoiseHistoryLongCompact" = "4 t";
+"sensorNoiseHistoryLoading" = "Luodaan sensorihistoriaa";
+"sensorNoiseHistoryNoDataTitle" = "Kohinatietoja ei ole vielä riittävästi";
+"sensorNoiseHistoryNoDataMessage" = "Kaavio tulee näkyviin, kun sensorilukemia on kerätty riittävästi.";
+"sensorNoiseHistoryChartAccessibility" = "Sensorin kohinahistorian kaavio";
+"pumpBattery" = "Akku";
+"pumpReservoir" = "Säiliö";
+"sensorManagementSessionLifetime" = "Elapsed / Remaining";
+"sensorManagementSessionDetails" = "Session Details";
+"sensorManagementCalibrationOpenTitle" = "Calibration Details";
+"sensorManagementCGMType" = "CGM Type";
+"sensorManagementLastCalibration" = "Viimeisin";
+"sensorManagementStatusActive" = "Sensor Active";
+"sensorManagementStarted" = "Started";
+"sensorManagementEnds" = "Ends";
+"sensorHealthPersistentNoiseTitle" = "Erittäin voimakas anturikohina";
+"sensorHealthPersistentNoiseGuidance" = "Erittäin voimakasta kohinaa 12 tunnin ajan. Harkitse anturin vaihtamista, jos se jatkuu.";
+"sensorHealthFlatlineTitle" = "Anturin signaali on tasainen";
+"sensorHealthFlatlineGuidance" = "Lukemat eivät ole muuttuneet 30 minuuttiin. Tämä tarkoittaa yleensä, että anturi on vioittunut/vanhentunut.";
+"sensorHealthTemporaryIssueTitle" = "Tilapäinen anturiongelma";
+"sensorHealthTemporaryIssueGuidance" = "Tilapäinen anturiongelma 3 tunnin ajan. Tarkista verensokerimittarilla ja noudata valmistajan ohjeita.";
+"sensorHealthSensorFailedTitle" = "Anturi vioittunut";
+"sensorHealthSensorFailedGuidance" = "Anturivika ilmoitettu. Vaihda anturi.";
+"sensorHealthTransmitterFailedTitle" = "Lähetinvika";
+"sensorHealthTransmitterFailedGuidance" = "Lähetinvika ilmoitettu. Tarkista tai vaihda lähetin.";
+"connectingToCGM" = "Yhdistetään CGM-laitteeseen...";
+"reconnectingToCGM" = "Yhdistetään uudelleen CGM-laitteeseen...";
+
+/* Dexcom G6 sensor-label scanning */
+"scanWithCamera" = "Skannaa kameralla";
+"manuallyEnterSensorCode" = "Syötä koodi manuaalisesti";
+"dexcomG6ManualSensorCodeMessage" = "Syötä sensorin etiketissä oleva nelinumeroinen kalibrointikoodi.";
+"chooseSensorLabelPhoto" = "Valitse kuva";
+"readingSensorLabel" = "Luetaan anturin etikettiä...";
+"scanSensorLabel" = "Skannaa anturin etiketti";
+"sensorCodeScannerGuidance" = "Aseta Data Matrix kehyksen sisään.";
+"sensorCodeScannerTorch" = "Taskulamppu";
+"cameraAccessRequired" = "Kameran käyttöoikeus tarvitaan";
+"cameraAccessRequiredMessage" = "Salli kameran käyttö Asetuksissa, syötä koodi käsin tai valitse kuva.";
+"openSettings" = "Avaa Asetukset";
+"cameraUnavailable" = "Kamera ei ole käytettävissä";
+"cameraUnavailableMessage" = "Syötä anturikoodi käsin tai valitse kuva.";
+"sensorInformationTitle" = "Anturin tiedot";
+"sensorLotNumber" = "Eränumero";
+"sensorSerialNumberMetadata" = "Anturin sarjanumero";
+"sensorLabelReviewFooter" = "Tarkista valintasi ja mahdolliset etiketin tiedot ja napauta Jatka.";
+"sensorLabelScanFailed" = "Anturin etikettiä ei luettu";
+"multipleSensorLabelsFound" = "Kuvassa on useampi kuin yksi anturin etiketti. Valitse kuva, jossa on yksi etiketti.";
+"noSensorLabelFound" = "Kuvasta ei löytynyt kelvollista Dexcom G6 -anturin etikettiä.";
+"invalidSensorLabelFound" = "Data Matrix löytyi, mutta se ei ollut kelvollinen Dexcom G6 -anturin etiketti.";
+"sensorLabelPhotoUnreadable" = "Valittua kuvaa ei voitu lukea.";
+"sensorCodeMetadata" = "Anturikoodi";
+"scannedSensorLabelCode" = "Skannatun etiketin koodi";
+"noCodeSensorSessionValue" = "0000 (Kooditon istunto)";
+"sensorCodeUnknown" = "Tuntematon";
+
+"sensorManagementCalibrationInProgress" = "Kalibrointi käynnissä...";
+"sensorManagementCalibrationQueued" = "Jonossa";
+"sensorManagementCalibrationSent" = "Lähetetty, odottaa vastausta";
+"sensorManagementCalibrationSentShort" = "Lähetetty";
+"sensorManagementCalibrationCompletedShort" = "Valmis";
+"sensorManagementCalibrationRejectedShort" = "Hylätty";
+"sensorManagementCalibrationErrorShort" = "Virhe";
+"sensorManagementCalibrationProcessing" = "Käsitellään";
+"sensorManagementCalibrationCompletedHigh" = "Valmis, korkea varmuus";
+"sensorManagementCalibrationCompletedLow" = "Valmis, matala varmuus";
+"sensorManagementCalibrationRejectedFormat" = "Hylätty: %@";
+"sensorManagementCalibrationNotPermitted" = "Kalibrointi ei ole sallittu";
+"sensorManagementCalibrationNotPermittedNote" = "Lähetin ei tällä hetkellä salli kalibrointia.";
+"sensorManagementCalibrationRejectedRange" = "Arvo alueen ulkopuolella";
+"sensorManagementCalibrationRejectedTime" = "Virheellinen kalibrointiaika";
+"sensorManagementCalibrationRejectedDuplicate" = "Jo syötetty";
+"sensorManagementCalibrationRejectedBounds" = "Rajojen tarkistus epäonnistui";
+"sensorManagementCalibrationRejectedUnknown" = "Tuntematon syy";
+"sensorManufactureDate" = "Valmistuspäivä";
+"sensorExpirationDate" = "Viimeinen käyttöpäivä";
+"sensorManagementWaitingForSensorStart" = "Odotetaan sensorin käynnistymistä";
+"sensorManagementStatusWarmingUp" = "Lämpenee";
+"sensorCodeContinue" = "Jatka";
+"useWithoutSensorCode" = "Käytä ilman koodia";
+"noSensorCode" = "Ei koodia (0000)";
+"dexcomG7SelectSensorCodeMessage" = "Syötä nelinumeroinen pariliitoskoodi käsin, skannaa nykyinen asetin tai valitse kuva. Tarkista valittu koodi ja napauta Jatka.";
+"noSensorCodeSelectedTitle" = "Jatketaanko ilman anturin koodia?";
+"noSensorCodeSelectedMessage" = "Jos lähettimessä on jo käynnissä anturijakso, sovellus käyttää sitä sen nykyisten kalibrointivaatimusten mukaisesti.\n\nUuden jakson aloittaminen ilman koodia edellyttää kalibrointeja lämpenemisen jälkeen ja myöhemmin säännöllisesti. Sovelluksen kalibrointimuistutuksen poistaminen käytöstä ei poista näitä vaatimuksia.";

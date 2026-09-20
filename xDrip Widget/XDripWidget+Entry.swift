@@ -37,15 +37,16 @@ extension XDripWidget.Entry {
         var allowStandByHighContrast: Bool
         var forceStandByBigNumbers: Bool
         var followerPatientName: String?
+        var keepAliveDisabledMessage: String?
         
-        var deviceStatusCreatedAt: Date?
-        var deviceStatusLastLoopDate: Date?
+        var aidStatus: AIDStatus?
+        var therapyMetrics: TherapyMetricsSnapshot? = nil
         
         var bgUnitString: String
         var bgValueInMgDl: Double?
         var bgReadingDate: Date?
                 
-        init(bgReadingValues: [Double]? = nil, bgReadingDates: [Date]? = nil, isMgDl: Bool? = true, slopeOrdinal: Int? = 0, deltaValueInUserUnit: Double? = nil, urgentLowLimitInMgDl: Double? = 60, lowLimitInMgDl: Double? = 80, highLimitInMgDl: Double? = 180, urgentHighLimitInMgDl: Double? = 250, dataSourceDescription: String? = "", followerPatientName: String?, deviceStatusCreatedAt: Date?, deviceStatusLastLoopDate: Date?, allowStandByHighContrast: Bool? = true, forceStandByBigNumbers: Bool? = false) {
+        init(bgReadingValues: [Double]? = nil, bgReadingDates: [Date]? = nil, isMgDl: Bool? = true, slopeOrdinal: Int? = 0, deltaValueInUserUnit: Double? = nil, urgentLowLimitInMgDl: Double? = 60, lowLimitInMgDl: Double? = 80, highLimitInMgDl: Double? = 180, urgentHighLimitInMgDl: Double? = 250, dataSourceDescription: String? = "", followerPatientName: String?, keepAliveDisabledMessage: String? = nil, aidStatus: AIDStatus? = nil, therapyMetrics: TherapyMetricsSnapshot? = nil, allowStandByHighContrast: Bool? = true, forceStandByBigNumbers: Bool? = false) {
             self.bgReadingValues = bgReadingValues
             self.bgReadingDates = bgReadingDates
             self.isMgDl = isMgDl ?? true
@@ -59,9 +60,10 @@ extension XDripWidget.Entry {
             self.allowStandByHighContrast = allowStandByHighContrast ?? true
             self.forceStandByBigNumbers = forceStandByBigNumbers ?? false
             self.followerPatientName = followerPatientName
+            self.keepAliveDisabledMessage = keepAliveDisabledMessage
             
-            self.deviceStatusCreatedAt = deviceStatusCreatedAt
-            self.deviceStatusLastLoopDate = deviceStatusLastLoopDate            
+            self.aidStatus = aidStatus
+            self.therapyMetrics = therapyMetrics
             
             self.bgValueInMgDl = (bgReadingValues?.count ?? 0) > 0 ? bgReadingValues?[0] : nil
             self.bgReadingDate = (bgReadingDates?.count ?? 0) > 0 ? bgReadingDates?[0] : nil
@@ -228,35 +230,14 @@ extension XDripWidget.Entry {
         }
         
         func deviceStatusColor() -> Color? {
-            if let lastLoopDate = deviceStatusLastLoopDate, let createdAt = deviceStatusCreatedAt {
-                if lastLoopDate > .now.addingTimeInterval(-ConstantsHomeView.loopShowWarningAfterMinutes) {
-                    return .green
-                } else if lastLoopDate > .now.addingTimeInterval(-ConstantsHomeView.loopShowNoDataAfterMinutes) {
-                    return .green
-                } else if createdAt > .now.addingTimeInterval(-ConstantsHomeView.loopShowNoDataAfterMinutes) {
-                    return .yellow
-                } else {
-                    return .red
-                }
-            } else {
-                return nil
-            }
+            aidStatus?.presentation().color
         }
         
-        func deviceStatusIconImage() -> Image? {
-            if let lastLoopDate = deviceStatusLastLoopDate, let createdAt = deviceStatusCreatedAt {
-                if lastLoopDate > .now.addingTimeInterval(-ConstantsHomeView.loopShowWarningAfterMinutes) {
-                    return Image(systemName: "checkmark.circle.fill")
-                } else if lastLoopDate > .now.addingTimeInterval(-ConstantsHomeView.loopShowNoDataAfterMinutes) {
-                    return Image(systemName: "checkmark.circle")
-                } else if createdAt > .now.addingTimeInterval(-ConstantsHomeView.loopShowNoDataAfterMinutes) {
-                    return Image(systemName: "questionmark.circle")
-                } else {
-                    return Image(systemName: "exclamationmark.circle")
-                }
-            } else {
-                return nil
-            }
+        /// Use the common AID renderer so this surface inherits the same symbol weight as the app.
+        /// Keep a missing symbol absent so checking states do not imply an active loop.
+        func deviceStatusIconImage() -> AIDStatusSymbolImage? {
+            guard let symbol = aidStatus?.presentation().symbol else { return nil }
+            return AIDStatusSymbolImage(symbol: symbol)
         }
     }
 }
@@ -265,6 +246,6 @@ extension XDripWidget.Entry {
 
 extension XDripWidget.Entry {
     static var placeholder: Self {
-        .init(date: .now, widgetState: WidgetState(bgReadingValues: ConstantsWidgetExtension.bgReadingValuesPlaceholderData, bgReadingDates: ConstantsWidgetExtension.bgReadingDatesPlaceholderData(), isMgDl: true, slopeOrdinal: 4, deltaValueInUserUnit: 0, urgentLowLimitInMgDl: 70, lowLimitInMgDl: 90, highLimitInMgDl: 140, urgentHighLimitInMgDl: 180, dataSourceDescription: "Dexcom G6", followerPatientName: nil, deviceStatusCreatedAt: Date().addingTimeInterval(-200), deviceStatusLastLoopDate: Date().addingTimeInterval(-120)))
+        .init(date: .now, widgetState: WidgetState(bgReadingValues: ConstantsWidgetExtension.bgReadingValuesPlaceholderData, bgReadingDates: ConstantsWidgetExtension.bgReadingDatesPlaceholderData(), isMgDl: true, slopeOrdinal: 4, deltaValueInUserUnit: 0, urgentLowLimitInMgDl: 70, lowLimitInMgDl: 90, highLimitInMgDl: 140, urgentHighLimitInMgDl: 180, dataSourceDescription: "Dexcom G6", followerPatientName: nil))
     }
 }

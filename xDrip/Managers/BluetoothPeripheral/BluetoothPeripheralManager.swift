@@ -2,7 +2,6 @@ import Foundation
 import os
 import CoreBluetooth
 import CoreData
-import UIKit
 
 class BluetoothPeripheralManager: NSObject {
     
@@ -30,14 +29,19 @@ class BluetoothPeripheralManager: NSObject {
     /// if scan is called, and a connection is successfully made to a new device, then this function must be called
     public var callBackAfterDiscoveringDevice: ((BluetoothPeripheral) -> Void)?
 
-    /// used to present alert messages
-    public let uIViewController: UIViewController
+    /// sends user-facing Bluetooth messages to the presentation owner
+    public let messageHandler: (_ title: String, _ message: String) -> Void
     
     /// bluetoothtransmitter may need pairing, but app is in background. Notification will be sent to user, user will open the app, at that moment pairing can happen. variable bluetoothTransmitterThatNeedsPairing will temporary store the BluetoothTransmitter that needs the pairing
     public var bluetoothTransmitterThatNeedsPairing: BluetoothTransmitter?
     
     /// when xdrip connects to a BluetoothTransmitter that is also CGMTransmitter, then we'll call this function with the BluetoothTransmitter as argument. This function is defined by RootViewController, it will allow the RootViewController to set the CGMTransmitter, calibrator ...
     public var cgmTransmitterInfoChanged: () -> ()
+
+    /// Lightweight presentation refresh used for connection-state changes that do not change
+    /// transmitter configuration. In particular, routine Dexcom cycles must not run the heavier
+    /// `cgmTransmitterInfoChanged` workflow.
+    public var connectionPresentationChanged: () -> ()
     
     /// address of the last active cgmTransmitter
     ///
@@ -52,11 +56,14 @@ class BluetoothPeripheralManager: NSObject {
                 
                 cgmTransmitterInfoChanged()
 
-                // share new address with loop, but not if loop share is disabled
+                // Share legacy transmitter connection details only when the active glucose source
+                // is permitted to publish to the selected OS-AID target.
                 if UserDefaults.standard.loopShareType != .disabled {
-
-                    setCGMTransmitterInSharedUserDefaults()
-
+                    if UserDefaults.standard.canPublishOSAidData {
+                        setCGMTransmitterInSharedUserDefaults()
+                    } else {
+                        clearCGMTransmitterInSharedUserDefaults()
+                    }
                 }
                 
             }
@@ -69,6 +76,9 @@ class BluetoothPeripheralManager: NSObject {
     
     /// CoreDataManager to use
     public let coreDataManager:CoreDataManager
+
+    /// Central persistence boundary for genuine per-device battery observations.
+    lazy var batteryHistoryManager = BatteryHistoryManager(coreDataManager: coreDataManager)
     
     /// reference to BgReadingsAccessor
     private var bgReadingsAccessor: BgReadingsAccessor
@@ -95,8 +105,8 @@ class BluetoothPeripheralManager: NSObject {
     
     /// - parameters:
     ///     - cgmTransmitterInfoChanged : to be called when currently used cgmTransmitter changes
-    ///     - uIViewController : used to present alert messages
-    init(coreDataManager: CoreDataManager, cgmTransmitterDelegate: CGMTransmitterDelegate, uIViewController: UIViewController, heartBeatFunction: (() -> ())?, cgmTransmitterInfoChanged: @escaping () -> ()) {
+    ///     - messageHandler : sends user-facing messages without giving the manager a view controller
+    init(coreDataManager: CoreDataManager, cgmTransmitterDelegate: CGMTransmitterDelegate, messageHandler: @escaping (_ title: String, _ message: String) -> Void, heartBeatFunction: (() -> ())?, cgmTransmitterInfoChanged: @escaping () -> (), connectionPresentationChanged: @escaping () -> Void = {}) {
         
         // initialize properties
         self.coreDataManager = coreDataManager
@@ -105,8 +115,9 @@ class BluetoothPeripheralManager: NSObject {
         self.calibrationsAccessor = CalibrationsAccessor(coreDataManager: coreDataManager)
         self.cgmTransmitterDelegate = cgmTransmitterDelegate
         self.cgmTransmitterInfoChanged = cgmTransmitterInfoChanged
+        self.connectionPresentationChanged = connectionPresentationChanged
         self.bLEPeripheralAccessor = BLEPeripheralAccessor(coreDataManager: coreDataManager)
-        self.uIViewController = uIViewController
+        self.messageHandler = messageHandler
         self.heartBeatFunction = heartBeatFunction
         
         super.init()
@@ -163,7 +174,7 @@ class BluetoothPeripheralManager: NSObject {
                         _ = m5StackBluetoothTransmitter.writeBgReadingInfo(bgReading: bgReadingToSend[0])
                     }
                     
-                case .DexcomType, .BubbleType, .MiaoMiaoType, .Libre2Type, .DexcomG7Type:
+                case .DexcomType, .BubbleType, .MiaoMiaoType, .Libre2Type, .DexcomG7Type, .MedtrumTouchCareNanoType:
                     // cgm's don't receive reading, they send it
                     break
                     
@@ -180,12 +191,7 @@ class BluetoothPeripheralManager: NSObject {
 
     /// disconnect from bluetoothPeripheral - and don't reconnect - set shouldconnect to false
     public func disconnect(fromBluetoothPeripheral bluetoothPeripheral: BluetoothPeripheral) {
-        
-        // device should not reconnect after disconnecting
-        bluetoothPeripheral.blePeripheral.shouldconnect = false
-        
-        // save in coredata
-        coreDataManager.saveChanges()
+        setConnectionEnabled(false, for: bluetoothPeripheral)
         
         if let bluetoothTransmitter = getBluetoothTransmitter(for: bluetoothPeripheral, createANewOneIfNecesssary: false) {
             
@@ -193,6 +199,47 @@ class BluetoothPeripheralManager: NSObject {
             
         }
         
+    }
+
+    /// Changes the user's persisted connection choice. A new activation must prove one successful
+    /// connection before an intermittent Dexcom can be presented as normally waiting.
+    func setConnectionEnabled(_ enabled: Bool, for bluetoothPeripheral: BluetoothPeripheral) {
+        let blePeripheral = bluetoothPeripheral.blePeripheral
+        let activationChanged = blePeripheral.shouldconnect != enabled
+        let disabledStateNeedsCleanup = !enabled && blePeripheral.hasConnectedSinceActivation
+        guard activationChanged || disabledStateNeedsCleanup else { return }
+
+        blePeripheral.shouldconnect = enabled
+        blePeripheral.hasConnectedSinceActivation = false
+        coreDataManager.saveChanges()
+        connectionPresentationChanged()
+    }
+
+    /// Records the first successful connection for the current activation without resetting it on
+    /// later routine disconnects.
+    func recordSuccessfulConnection(for bluetoothPeripheral: BluetoothPeripheral) {
+        let blePeripheral = bluetoothPeripheral.blePeripheral
+
+        // A late Core Bluetooth callback can arrive after a user or follower-mode shutdown. It must
+        // not repopulate activation state for a device that is no longer enabled.
+        guard blePeripheral.shouldconnect else { return }
+
+        guard !blePeripheral.hasConnectedSinceActivation else {
+            connectionPresentationChanged()
+            return
+        }
+
+        blePeripheral.hasConnectedSinceActivation = true
+        coreDataManager.saveChanges()
+        connectionPresentationChanged()
+    }
+
+    /// Records a routine Core Bluetooth disconnect without changing activation success. This is
+    /// the boundary that keeps an intermittent Dexcom green between advertisements.
+    func recordDisconnection(for bluetoothPeripheral: BluetoothPeripheral) {
+        bluetoothPeripheral.blePeripheral.lastConnectionStatusChangeTimeStamp = Date()
+        coreDataManager.saveChanges()
+        connectionPresentationChanged()
     }
 
     /// returns the bluetoothTransmitter for the bluetoothPeripheral
@@ -230,7 +277,7 @@ class BluetoothPeripheralManager: NSObject {
                     
                     if let dexcomG7 = bluetoothPeripheral as? DexcomG7, let cgmTransmitterDelegate = cgmTransmitterDelegate {
                             
-                        newTransmitter = CGMG7Transmitter(address: dexcomG7.blePeripheral.address, name: dexcomG7.blePeripheral.name, transmitterID: dexcomG7.blePeripheral.transmitterId, bluetoothTransmitterDelegate: self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate)
+                        newTransmitter = CGMG7Transmitter(address: dexcomG7.blePeripheral.address, name: dexcomG7.blePeripheral.name, transmitterID: dexcomG7.blePeripheral.transmitterId, useOtherApp: dexcomG7.useOtherApp, pairingCode: dexcomG7.sensorCode, bluetoothSlot: dexcomG7.resolvedDexcomG7BluetoothSlot(), sensorSessionLength: dexcomG7.sensorSessionLength?.doubleValue, firmwareVersion: dexcomG7.firmwareVersion, firmwareBuildVersion: dexcomG7.firmwareBuildVersion?.uint32Value, firmwareVersionCode: dexcomG7.firmwareVersionCode?.uint32Value, batteryLastReadDate: dexcomG7.batteryLastReadDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: sensorsAccessor.fetchActiveSensor()), bluetoothTransmitterDelegate: self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate)
                         
                     } else {
                         
@@ -244,7 +291,9 @@ class BluetoothPeripheralManager: NSObject {
                         
                         if let transmitterId = dexcomG5orG6.blePeripheral.transmitterId, let cgmTransmitterDelegate = cgmTransmitterDelegate {
                             
-                            newTransmitter = CGMG5Transmitter(address: dexcomG5orG6.blePeripheral.address, name: dexcomG5orG6.blePeripheral.name, transmitterID: transmitterId, bluetoothTransmitterDelegate: self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: dexcomG5orG6.transmitterStartDate, sensorStartDate: dexcomG5orG6.sensorStartDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: sensorsAccessor.fetchActiveSensor()), firmware: dexcomG5orG6.firmwareVersion, webOOPEnabled: dexcomG5orG6.blePeripheral.webOOPEnabled, useOtherApp: dexcomG5orG6.useOtherApp, isAnubis: dexcomG5orG6.isAnubis)
+                            let activeSensor = sensorsAccessor.fetchActiveSensor()
+                            let bluetoothSlot = dexcomG5orG6.resolvedDexcomG6BluetoothSlot()
+                            newTransmitter = CGMG5Transmitter(address: dexcomG5orG6.blePeripheral.address, name: dexcomG5orG6.blePeripheral.name, transmitterID: transmitterId, bluetoothTransmitterDelegate: self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: dexcomG5orG6.transmitterStartDate, sensorStartDate: dexcomG5orG6.sensorStartDate, activeSensorStartDate: activeSensor?.startDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: activeSensor), firmware: dexcomG5orG6.firmwareVersion, batteryLastReadDate: dexcomG5orG6.batteryLastReadDate, webOOPEnabled: dexcomG5orG6.blePeripheral.webOOPEnabled, useOtherApp: dexcomG5orG6.useOtherApp, isAnubis: dexcomG5orG6.isAnubis, bluetoothSlot: bluetoothSlot)
                             
                             
                         } else {
@@ -340,10 +389,34 @@ class BluetoothPeripheralManager: NSObject {
 
                     }
 
+                case .MedtrumTouchCareNanoType:
+
+                    if let medtrumNano = bluetoothPeripheral as? MedtrumTouchCareNano {
+
+                        if let cgmTransmitterDelegate = cgmTransmitterDelegate {
+
+                            newTransmitter = CGMMedtrumTouchCareNanoTransmitter(address: medtrumNano.blePeripheral.address, name: medtrumNano.blePeripheral.name, bluetoothTransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate)
+
+                        } else {
+
+                            trace("in getBluetoothTransmitter, case MedtrumTouchCareNanoType but cgmTransmitterDelegate is nil, looks like a coding error ", log: log, category: ConstantsLog.categoryBluetoothPeripheralManager, type: .error)
+
+                        }
+                    }
+
                 }
                 
                 
                 bluetoothTransmitters[index] = newTransmitter
+
+                // A saved CGM becomes the selected source as soon as the user enables it. Waiting
+                // until didConnect leaves Home reporting that no source is selected during scanning.
+                if bluetoothPeripheral.blePeripheral.shouldconnect,
+                   bluetoothPeripheral.bluetoothPeripheralType().category() == .CGM,
+                   newTransmitter is CGMTransmitter,
+                   let transmitterAddress = newTransmitter?.deviceAddress {
+                    currentCgmTransmitterAddress = transmitterAddress
+                }
                 
                 return newTransmitter
                 
@@ -407,6 +480,11 @@ class BluetoothPeripheralManager: NSObject {
                 if bluetoothTransmitter is CGMG7Transmitter {
                     return .DexcomG7Type
                 }
+
+            case .MedtrumTouchCareNanoType:
+                if bluetoothTransmitter is CGMMedtrumTouchCareNanoTransmitter {
+                    return .MedtrumTouchCareNanoType
+                }
                 
             }
             
@@ -419,8 +497,9 @@ class BluetoothPeripheralManager: NSObject {
 
     /// - parameters:
     ///     - transmitterId : only for transmitter types that need it (at the moment only Dexcom)
+    ///     - dexcomG6BluetoothSlot: the role to use when creating a temporary G6 transmitter
     ///     - bluetoothTransmitterDelegate : if not nil then this bluetoothTransmitterDelegate will be used when creating bluetoothTransmitter, otherwise self is used
-    public func createNewTransmitter(type: BluetoothPeripheralType, transmitterId: String?, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate?) -> BluetoothTransmitter {
+    public func createNewTransmitter(type: BluetoothPeripheralType, transmitterId: String?, dexcomG6BluetoothSlot: DexcomG6BluetoothSlot, dexcomConfiguration: DexcomAddConfiguration? = nil, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate?) -> BluetoothTransmitter {
         
         switch type {
             
@@ -434,7 +513,7 @@ class BluetoothPeripheralManager: NSObject {
                 fatalError("in createNewTransmitter, type DexcomType, transmitterId is nil or cgmTransmitterDelegate is nil")
             }
             
-            return CGMG5Transmitter(address: nil, name: nil, transmitterID: transmitterId, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: nil, sensorStartDate: nil, calibrationToSendToTransmitter: nil, firmware: nil, webOOPEnabled: nil, useOtherApp: false, isAnubis: false)
+            return CGMG5Transmitter(address: nil, name: nil, transmitterID: transmitterId, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: nil, sensorStartDate: nil, activeSensorStartDate: nil, calibrationToSendToTransmitter: nil, firmware: nil, batteryLastReadDate: nil, webOOPEnabled: nil, useOtherApp: dexcomConfiguration?.useOtherApp ?? false, isAnubis: false, bluetoothSlot: dexcomG6BluetoothSlot)
             
         case .BubbleType:
             
@@ -486,7 +565,15 @@ class BluetoothPeripheralManager: NSObject {
                 fatalError("in createNewTransmitter, DexcomG7Type, cgmTransmitterDelegate is nil")
             }
             
-            return CGMG7Transmitter(address: nil, name: nil, transmitterID: transmitterId, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate)
+            return CGMG7Transmitter(address: nil, name: nil, transmitterID: transmitterId, useOtherApp: dexcomConfiguration?.useOtherApp ?? true, pairingCode: dexcomConfiguration?.sensorLabel?.sensorCode, bluetoothSlot: dexcomConfiguration?.g7BluetoothSlot ?? .defaultSlot, sensorSessionLength: nil, firmwareVersion: nil, firmwareBuildVersion: nil, firmwareVersionCode: nil, batteryLastReadDate: nil, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: sensorsAccessor.fetchActiveSensor()), bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate)
+
+        case .MedtrumTouchCareNanoType:
+
+            guard let cgmTransmitterDelegate = cgmTransmitterDelegate else {
+                fatalError("in createNewTransmitter, MedtrumTouchCareNanoType, cgmTransmitterDelegate is nil")
+            }
+
+            return CGMMedtrumTouchCareNanoTransmitter(address: nil, name: nil, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self, cGMTransmitterDelegate: cgmTransmitterDelegate)
             
         }
         
@@ -555,19 +642,23 @@ class BluetoothPeripheralManager: NSObject {
         
     }
 
+    /// Removes legacy xdrip-client-swift connection details when the active source cannot be used
+    /// as an OS-AID CGM source.
+    private func clearCGMTransmitterInSharedUserDefaults() {
+        guard let sharedUserDefaults = UserDefaults(suiteName: UserDefaults.standard.loopShareType.sharedUserDefaultsSuiteName) else {
+            return
+        }
+
+        sharedUserDefaults.removeObject(forKey: "cgmTransmitterDeviceAddress")
+        sharedUserDefaults.removeObject(forKey: "cgmTransmitter_CBUUID_Service")
+        sharedUserDefaults.removeObject(forKey: "cgmTransmitter_CBUUID_Receive")
+    }
+
     /// when user changes M5Stack related settings, then the transmitter need to get that info, add observers
     private func addObservers() {
         
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiName1.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiName2.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiName3.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiPassword1.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiPassword2.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackWiFiPassword3.rawValue, options: .new, context: nil)
         UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.m5StackBlePassword.rawValue, options: .new, context: nil)
         UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.bloodGlucoseUnitIsMgDl.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.nightscoutUrl.rawValue, options: .new, context: nil)
-        UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.nightscoutAPIKey.rawValue, options: .new, context: nil)
         UserDefaults.standard.addObserver(self, forKeyPath: UserDefaults.Key.isMaster.rawValue, options: .new, context: nil)
 
     }
@@ -604,18 +695,10 @@ class BluetoothPeripheralManager: NSObject {
             // perform the ARC release on the next main runloop tick to avoid racing CB callbacks
             DispatchQueue.main.asyncAfter(deadline: .now() + .milliseconds(50)) { [weak self] in
                 guard let self = self else { return }
-                // The array may have been mutated between scheduling and execution, re-validate the index.
-                guard index >= 0 && index < self.bluetoothTransmitters.count else {
-                    trace("in setTransmitterToNilAndCallcgmTransmitterInfoChangedIfNecessary, index %{public}d out of range (count=%{public}d), skipping", log: self.log, category: ConstantsLog.categoryBluetoothPeripheralManager, type: .error, index, self.bluetoothTransmitters.count)
-                    return
-                }
-                self.bluetoothTransmitters[index] = nil
-            }
-        } else {
-            DispatchQueue.main.async { [weak self] in
-                guard let self = self else { return }
-                guard index >= 0 && index < self.bluetoothTransmitters.count else { return }
-                self.bluetoothTransmitters[index] = nil
+                // The arrays may have shifted after deleting a device. Release only the
+                // transmitter that was prepared above, never the new occupant of its old index.
+                guard let currentIndex = self.bluetoothTransmitters.firstIndex(where: { $0 === transmitter }) else { return }
+                self.bluetoothTransmitters[currentIndex] = nil
             }
         }
         
@@ -707,7 +790,9 @@ class BluetoothPeripheralManager: NSObject {
 
                                 // create an instance of CGMG5Transmitter, will automatically try to connect to the dexcom with the address that is stored in dexcom
                                 // add it to the array of bluetoothTransmitters
-                                bluetoothTransmitters.insert(CGMG5Transmitter(address: dexcomG5orG6.blePeripheral.address, name: dexcomG5orG6.blePeripheral.name, transmitterID: transmitterId, bluetoothTransmitterDelegate: self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: dexcomG5orG6.transmitterStartDate, sensorStartDate: dexcomG5orG6.sensorStartDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: sensorsAccessor.fetchActiveSensor()), firmware: dexcomG5orG6.firmwareVersion, webOOPEnabled: dexcomG5orG6.blePeripheral.webOOPEnabled, useOtherApp: dexcomG5orG6.useOtherApp, isAnubis: dexcomG5orG6.isAnubis), at: index)
+                                let activeSensor = sensorsAccessor.fetchActiveSensor()
+                                let bluetoothSlot = dexcomG5orG6.resolvedDexcomG6BluetoothSlot()
+                                bluetoothTransmitters.insert(CGMG5Transmitter(address: dexcomG5orG6.blePeripheral.address, name: dexcomG5orG6.blePeripheral.name, transmitterID: transmitterId, bluetoothTransmitterDelegate: self, cGMG5TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate, transmitterStartDate: dexcomG5orG6.transmitterStartDate, sensorStartDate: dexcomG5orG6.sensorStartDate, activeSensorStartDate: activeSensor?.startDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: activeSensor), firmware: dexcomG5orG6.firmwareVersion, batteryLastReadDate: dexcomG5orG6.batteryLastReadDate, webOOPEnabled: dexcomG5orG6.blePeripheral.webOOPEnabled, useOtherApp: dexcomG5orG6.useOtherApp, isAnubis: dexcomG5orG6.isAnubis, bluetoothSlot: bluetoothSlot), at: index)
 
                                 // if DexcomG5Type is of type CGM, then assign the address to currentCgmTransmitterAddress, there shouldn't be any other bluetoothPeripherals of type .CGM with shouldconnect = true
                                 if bluetoothPeripheralType.category() == .CGM {
@@ -898,6 +983,8 @@ class BluetoothPeripheralManager: NSObject {
                 case .DexcomG7Type:
                     
                     if let dexcomG7 = blePeripheral.dexcomG7 {
+                        dexcomG7.migrateLegacySettingsIfNeeded()
+                        coreDataManager.saveChanges()
                         
                         blePeripheralFound = true
                         
@@ -908,7 +995,7 @@ class BluetoothPeripheralManager: NSObject {
 
                             // create an instance of CGMG7Transmitter, CGMG7Transmitter will automatically try to connect to the dexcomg7 with the address that is stored in bubble
                             // add it to the array of bluetoothTransmitters
-                            bluetoothTransmitters.insert(CGMG7Transmitter(address: dexcomG7.blePeripheral.address, name: dexcomG7.blePeripheral.name, transmitterID: dexcomG7.blePeripheral.transmitterId, bluetoothTransmitterDelegate: self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate), at: index)
+                            bluetoothTransmitters.insert(CGMG7Transmitter(address: dexcomG7.blePeripheral.address, name: dexcomG7.blePeripheral.name, transmitterID: dexcomG7.blePeripheral.transmitterId, useOtherApp: dexcomG7.useOtherApp, pairingCode: dexcomG7.sensorCode, bluetoothSlot: dexcomG7.resolvedDexcomG7BluetoothSlot(), sensorSessionLength: dexcomG7.sensorSessionLength?.doubleValue, firmwareVersion: dexcomG7.firmwareVersion, firmwareBuildVersion: dexcomG7.firmwareBuildVersion?.uint32Value, firmwareVersionCode: dexcomG7.firmwareVersionCode?.uint32Value, batteryLastReadDate: dexcomG7.batteryLastReadDate, calibrationToSendToTransmitter: calibrationsAccessor.lastCalibrationForActiveSensor(withActivesensor: sensorsAccessor.fetchActiveSensor()), bluetoothTransmitterDelegate: self, cGMG7TransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate), at: index)
                             
                             // if CGMG7Transmitter is of type CGM, then assign the address to currentCgmTransmitterAddress, there shouldn't be any other bluetoothPeripherals of type .CGM with shouldconnect = true
                             if bluetoothPeripheralType.category() == .CGM {
@@ -919,11 +1006,35 @@ class BluetoothPeripheralManager: NSObject {
                             
                             // bluetoothTransmitters array (which shoul dhave the same number of elements as bluetoothPeripherals) needs to have an empty row for the transmitter
                             bluetoothTransmitters.insert(nil, at: index)
-                            
+
                         }
-                        
+
                     }
-                    
+
+                case .MedtrumTouchCareNanoType:
+
+                    if let medtrumNano = blePeripheral.medtrumTouchCareNano {
+
+                        blePeripheralFound = true
+
+                        let index = insertInBluetoothPeripherals(bluetoothPeripheral: medtrumNano)
+
+                        if medtrumNano.blePeripheral.shouldconnect {
+
+                            bluetoothTransmitters.insert(CGMMedtrumTouchCareNanoTransmitter(address: medtrumNano.blePeripheral.address, name: medtrumNano.blePeripheral.name, bluetoothTransmitterDelegate: self, cGMTransmitterDelegate: cgmTransmitterDelegate), at: index)
+
+                            if bluetoothPeripheralType.category() == .CGM {
+                                currentCgmTransmitterAddress = blePeripheral.address
+                            }
+
+                        } else {
+
+                            bluetoothTransmitters.insert(nil, at: index)
+
+                        }
+
+                    }
+
                 }
 
             }
@@ -953,7 +1064,7 @@ class BluetoothPeripheralManager: NSObject {
         // first check keyValueObserverTimeKeeper
         switch keyPathEnum {
             
-        case UserDefaults.Key.m5StackWiFiName1, UserDefaults.Key.m5StackWiFiName2, UserDefaults.Key.m5StackWiFiName3, UserDefaults.Key.m5StackWiFiPassword1, UserDefaults.Key.m5StackWiFiPassword2, UserDefaults.Key.m5StackWiFiPassword3, UserDefaults.Key.nightscoutAPIKey, UserDefaults.Key.nightscoutUrl, UserDefaults.Key.bloodGlucoseUnitIsMgDl, UserDefaults.Key.m5StackBlePassword :
+        case UserDefaults.Key.bloodGlucoseUnitIsMgDl, UserDefaults.Key.m5StackBlePassword:
             
             // transmittertype change triggered by user, should not be done within 200 ms
             if !keyValueObserverTimeKeeper.verifyKey(forKey: keyPathEnum.rawValue, withMinimumDelayMilliSeconds: 200) {
@@ -1025,24 +1136,6 @@ class BluetoothPeripheralManager: NSObject {
                 
                 switch keyPathEnum {
                     
-                case UserDefaults.Key.m5StackWiFiName1:
-                    success = m5StackBluetoothTransmitter.writeWifiName(name: UserDefaults.standard.m5StackWiFiName1, number: 1)
-                    
-                case UserDefaults.Key.m5StackWiFiName2:
-                    success = m5StackBluetoothTransmitter.writeWifiName(name: UserDefaults.standard.m5StackWiFiName2, number: 2)
-                    
-                case UserDefaults.Key.m5StackWiFiName3:
-                    success = m5StackBluetoothTransmitter.writeWifiName(name: UserDefaults.standard.m5StackWiFiName3, number: 3)
-                    
-                case UserDefaults.Key.m5StackWiFiPassword1:
-                    success = m5StackBluetoothTransmitter.writeWifiPassword(password: UserDefaults.standard.m5StackWiFiPassword1, number: 1)
-                    
-                case UserDefaults.Key.m5StackWiFiPassword2:
-                    success = m5StackBluetoothTransmitter.writeWifiPassword(password: UserDefaults.standard.m5StackWiFiPassword2, number: 2)
-                    
-                case UserDefaults.Key.m5StackWiFiPassword3:
-                    success = m5StackBluetoothTransmitter.writeWifiPassword(password: UserDefaults.standard.m5StackWiFiPassword3, number: 3)
-                    
                 case UserDefaults.Key.m5StackBlePassword:
                     // only if the password in the settings is not nil, and if the m5Stack doesn't have a password yet, then we will store it in the M5Stack.
                     if let blePassword = UserDefaults.standard.m5StackBlePassword, m5Stack.blepassword == nil {
@@ -1051,12 +1144,6 @@ class BluetoothPeripheralManager: NSObject {
                     
                 case UserDefaults.Key.bloodGlucoseUnitIsMgDl:
                     success = m5StackBluetoothTransmitter.writeBloodGlucoseUnit(isMgDl: UserDefaults.standard.bloodGlucoseUnitIsMgDl)
-                    
-                case UserDefaults.Key.nightscoutAPIKey:
-                    success = m5StackBluetoothTransmitter.writeNightscoutAPIKey(apiKey: UserDefaults.standard.nightscoutAPIKey)
-                    
-                case UserDefaults.Key.nightscoutUrl:
-                    success = m5StackBluetoothTransmitter.writeNightscoutUrl(url: UserDefaults.standard.nightscoutUrl)
                     
                 default:
                     break
@@ -1067,7 +1154,7 @@ class BluetoothPeripheralManager: NSObject {
                     bluetoothPeripheral.blePeripheral.parameterUpdateNeededAtNextConnect = true
                 }
              
-            case .DexcomType, .BubbleType, .MiaoMiaoType, .Libre2Type, .Libre3HeartBeatType, .DexcomG7HeartBeatType, .OmniPodHeartBeatType, .DexcomG7Type:
+            case .DexcomType, .BubbleType, .MiaoMiaoType, .Libre2Type, .Libre3HeartBeatType, .DexcomG7HeartBeatType, .OmniPodHeartBeatType, .DexcomG7Type, .MedtrumTouchCareNanoType:
 
                 // nothing to check
                 break
@@ -1153,12 +1240,12 @@ extension BluetoothPeripheralManager: BluetoothPeripheralManaging {
         
     }
     
-    func startScanningForNewDevice(type: BluetoothPeripheralType, transmitterId: String?, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate?, callBackForScanningResult: ((BluetoothTransmitter.startScanningResult) -> Void)?, callback: @escaping (BluetoothPeripheral) -> Void)  {
+    func startScanningForNewDevice(type: BluetoothPeripheralType, transmitterId: String?, dexcomG6BluetoothSlot: DexcomG6BluetoothSlot, dexcomConfiguration: DexcomAddConfiguration?, bluetoothTransmitterDelegate: BluetoothTransmitterDelegate?, callBackForScanningResult: ((BluetoothTransmitter.startScanningResult) -> Void)?, callback: @escaping (BluetoothPeripheral) -> Void)  {
         
         callBackAfterDiscoveringDevice = callback
         
         // create a temporary transmitter of requested type
-        let newBluetoothTranmsitter = createNewTransmitter(type: type, transmitterId: transmitterId, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self)
+        let newBluetoothTranmsitter = createNewTransmitter(type: type, transmitterId: transmitterId, dexcomG6BluetoothSlot: dexcomG6BluetoothSlot, dexcomConfiguration: dexcomConfiguration, bluetoothTransmitterDelegate: bluetoothTransmitterDelegate ?? self)
         
         // assign transmitterTypeBeingScannedFor, will be needed in case tempBlueToothTransmitterWhileScanningForNewBluetoothPeripheral is being recreated (search for transmitterTypeBeingScannedFor in BluetoothPeripheralManager+BluetoothTransmitterDelegate
         transmitterTypeBeingScannedFor = type
@@ -1233,6 +1320,21 @@ extension BluetoothPeripheralManager: BluetoothPeripheralManaging {
             trace("in deleteBluetoothPeripheral but bluetoothPeripheral not found in bluetoothPeripherals, looks like a coding error ", log: log, category: ConstantsLog.categoryBluetoothPeripheralManager, type: .error)
             return
         }
+
+        // Remove the per-device subscription choice so re-adding this address starts with defaults.
+        if bluetoothPeripheral.bluetoothPeripheralType() == .Libre3HeartBeatType {
+            GenericHeartbeatSettings.remove(bluetoothPeripheral.blePeripheral.address)
+        }
+
+        if let dexcomG7 = bluetoothPeripheral as? DexcomG7 {
+            let transmitterIDs = Set([
+                dexcomG7.blePeripheral.name,
+                dexcomG7.blePeripheral.transmitterId
+            ].compactMap { $0 })
+            transmitterIDs.forEach {
+                DexcomG7AuthBridge.clearPersistedSharedKeys(forTransmitterID: $0)
+            }
+        }
         
         setTransmitterToNilAndCallcgmTransmitterInfoChangedIfNecessary(indexInBluetoothTransmittersArray: index)
         
@@ -1287,5 +1389,3 @@ extension BluetoothPeripheralManager: BluetoothPeripheralManaging {
     }
     
 }
-
-

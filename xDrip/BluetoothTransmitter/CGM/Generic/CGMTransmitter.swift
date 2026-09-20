@@ -62,6 +62,9 @@ protocol CGMTransmitter: AnyObject {
     /// - to send a calibration toe the transmitter
     /// - only useful for Dexcom type of transmitters, other transmitter types will have an empty implementation
     func calibrate(calibration: Calibration)
+
+    /// Latest transmitter-side calibration state, when the active CGM exposes one.
+    func transmitterCalibrationStatus() -> CGMTransmitterCalibrationStatus?
     
     /// - should user give sensor start time when starting a sensor
     /// - default true
@@ -71,6 +74,10 @@ protocol CGMTransmitter: AnyObject {
     /// - default false
     func needsSensorStartCode() -> Bool
     
+    /// if true, then the UI should ask the user to confirm a large one-step calibration change
+    /// - default false
+    func shouldWarnOnLargeCalibrationStep() -> Bool
+
     /// returns the service CBUUID
     func getCBUUID_Service() -> String
     
@@ -79,10 +86,98 @@ protocol CGMTransmitter: AnyObject {
     
 }
 
+enum CGMTransmitterCalibrationStatus: Equatable {
+    case queued
+    case sentAwaitingResponse
+    case processing
+    case completedHigh
+    case completedLow
+    case rejected(DexcomG7CalibrationRejectionReason)
+    case notPermitted
+
+    /// Groups detailed transmitter responses into the three states shown by the status indicator.
+    var indicatorColor: DexcomSensorStatusIndicatorColor {
+        switch self {
+        case .queued, .sentAwaitingResponse, .processing:
+            return .yellow
+        case .completedHigh, .completedLow:
+            return .green
+        case .rejected, .notPermitted:
+            return .red
+        }
+    }
+
+    var shortDescription: String {
+        switch self {
+        case .queued:
+            return Texts_HomeView.sensorManagementCalibrationQueued
+        case .sentAwaitingResponse:
+            return Texts_HomeView.sensorManagementCalibrationSentShort
+        case .processing:
+            return Texts_HomeView.sensorManagementCalibrationProcessing
+        case .completedHigh, .completedLow:
+            return Texts_HomeView.sensorManagementCalibrationCompletedShort
+        case .rejected:
+            return Texts_HomeView.sensorManagementCalibrationRejectedShort
+        case .notPermitted:
+            return Texts_HomeView.sensorManagementCalibrationErrorShort
+        }
+    }
+
+    var preventsCalibrationSubmission: Bool {
+        switch self {
+        case .queued, .sentAwaitingResponse, .processing, .notPermitted:
+            return true
+        case .completedHigh, .completedLow, .rejected:
+            return false
+        }
+    }
+
+    var isInProgress: Bool {
+        switch self {
+        case .queued, .sentAwaitingResponse, .processing:
+            return true
+        case .completedHigh, .completedLow, .rejected, .notPermitted:
+            return false
+        }
+    }
+
+    var traceDescription: String {
+        switch self {
+        case .queued: return "queued"
+        case .sentAwaitingResponse: return "sent, awaiting response"
+        case .processing: return "processing"
+        case .completedHigh: return "completed with high confidence"
+        case .completedLow: return "completed with low confidence"
+        case let .rejected(reason): return "rejected: \(reason.traceDescription)"
+        case .notPermitted: return "calibration not permitted"
+        }
+    }
+}
+
+struct CGMTransmitterCalibrationStatusTracker {
+    private(set) var status: CGMTransmitterCalibrationStatus?
+
+    @discardableResult
+    mutating func transition(to newStatus: CGMTransmitterCalibrationStatus) -> Bool {
+        guard status != newStatus else { return false }
+        status = newStatus
+        return true
+    }
+
+    @discardableResult
+    mutating func clear(if currentStatus: CGMTransmitterCalibrationStatus) -> Bool {
+        guard status == currentStatus else { return false }
+        status = nil
+        return true
+    }
+}
+
 /// cgm transmitter types
 enum CGMTransmitterType:String, CaseIterable {
     
-    /// dexcom G5, G6
+    /// 2026-08-13: Keep this legacy raw value because it is persisted in UserDefaults.
+    /// User-facing setup labels omit G5, while existing G5 transmitters remain supported.
     case dexcom = "Dexcom G5/G6/ONE"
     
     /// dexcom G7
@@ -96,7 +191,22 @@ enum CGMTransmitterType:String, CaseIterable {
     
     /// Libre2
     case Libre2 = "Libre2"
-    
+
+    /// Medtrum TouchCare Nano Pump with integrated CGM data relayed via the pump BLE session.
+    /// Keep this raw value stable because it is persisted in UserDefaults.
+    case medtrumTouchCareNano = "Medtrum Nano"
+
+    /// Direct Medtrum Nano glucose is already consumed by the connected pump and must not be
+    /// exported as an independent CGM source to another OS-AID system.
+    var osAidSharingPolicy: OSAidSharingPolicy {
+        switch self {
+        case .medtrumTouchCareNano:
+            return .blocked
+        default:
+            return .allowed
+        }
+    }
+
     /// what sensorType does this CGMTransmitter type support
     func sensorType() -> CGMSensorType {
         
@@ -107,7 +217,10 @@ enum CGMTransmitterType:String, CaseIterable {
             
         case .miaomiao, .Bubble, .Libre2:
             return .Libre
-            
+
+        case .medtrumTouchCareNano:
+            return .Medtrum
+
         }
         
     }
@@ -134,7 +247,13 @@ enum CGMTransmitterType:String, CaseIterable {
             
         case .dexcomG7:
             return true
-            
+
+        case .medtrumTouchCareNano:
+            // EasyPatch runs the actual sensor lifecycle, but we *can* infer sensor start by combining
+            // packet timestamp with the reading-counter we decode. Returning true lets xDrip auto-start
+            // its internal sensor record from the sensorAge we pass with each reading.
+            return true
+
         }
     }
     
@@ -153,7 +272,11 @@ enum CGMTransmitterType:String, CaseIterable {
             
         case .dexcomG7:
             return false
-        
+
+        case .medtrumTouchCareNano:
+            // EasyPatch owns sensor lifecycle. xDrip should not offer a manual start UI.
+            return false
+
         }
     }
         
@@ -174,9 +297,12 @@ enum CGMTransmitterType:String, CaseIterable {
             return ConstantsDefaultAlertLevels.defaultBatteryAlertLevelLibre2
             
         case .dexcomG7:
-            // we don't use this
-            return ConstantsDefaultAlertLevels.defaultBatteryAlertLevelDexcomG5
-            
+            return ConstantsDefaultAlertLevels.defaultBatteryAlertLevelDexcomG7
+
+        case .medtrumTouchCareNano:
+            // No pump-battery surface in xDrip. Reuse the generic threshold so the UI has a sane default.
+            return ConstantsDefaultAlertLevels.defaultBatteryAlertLevelLibre2
+
         }
     }
     
@@ -197,19 +323,27 @@ enum CGMTransmitterType:String, CaseIterable {
             return "%"
             
         case .dexcomG7:
-            // we don't use this
+            return "voltB"
+
+        case .medtrumTouchCareNano:
             return ""
-            
+
         }
     }
     
     func detailedDescription() -> String {
-        
+        detailedDescription(transmitterID: UserDefaults.standard.activeSensorTransmitterId)
+    }
+
+    /// Returns the product name for a specific transmitter rather than relying on global active
+    /// sensor state. Configured-device lists use this overload so inactive rows remain accurate.
+    func detailedDescription(transmitterID: String?) -> String {
+        let normalizedTransmitterID = transmitterID?.uppercased()
+
         switch self {
             /// dexcom G5, G6
         case .dexcom:
-            
-            if let transmitterIdString = UserDefaults.standard.activeSensorTransmitterId {
+            if let transmitterIdString = normalizedTransmitterID {
                 
                 if transmitterIdString.startsWith("4") {
                     
@@ -234,7 +368,7 @@ enum CGMTransmitterType:String, CaseIterable {
             return "Dexcom"
             
         case .dexcomG7:
-            if let transmitterIdString = UserDefaults.standard.activeSensorTransmitterId {
+            if let transmitterIdString = normalizedTransmitterID {
                 if transmitterIdString.startsWith("DX01") {
                     return "Dexcom Stelo"
                 } else if transmitterIdString.startsWith("DX02") {
@@ -243,7 +377,7 @@ enum CGMTransmitterType:String, CaseIterable {
                     return "Dexcom G7"
                 }
             }
-            return "Dexcom - please wait..."
+            return "Dexcom G7"
             
         case .Libre2:
             if let activeSensorMaxSensorAgeInDays = UserDefaults.standard.activeSensorMaxSensorAgeInDays, activeSensorMaxSensorAgeInDays >= 15 {
@@ -251,6 +385,9 @@ enum CGMTransmitterType:String, CaseIterable {
             } else {
                 return "Libre 2 EU"
             }
+
+        case .medtrumTouchCareNano:
+            return "Medtrum Nano Pump CGM"
             
         default:
             return self.rawValue
@@ -259,6 +396,54 @@ enum CGMTransmitterType:String, CaseIterable {
         
     }
     
+}
+
+/// Resolves the real Dexcom product name from the identifier that belongs to one saved device.
+///
+/// A normal G5/G6 transmitter stores its real transmitter ID before scanning starts. Automatic
+/// G7 discovery is different because it initially stores `DX0000` only as a search placeholder.
+/// Once Core Bluetooth finds the sensor, its advertised `DX...` name is the value that identifies
+/// G7, ONE+, or Stelo. Keeping this choice in one place prevents the device list, detail view, and
+/// Sensor Management from showing different product names for the same physical sensor.
+enum DexcomProductNameResolver {
+    // Display name for the UI and shared metadata. Keep stored source names and reporting unchanged.
+    static let anubisTitle = "Anubis G6"
+
+    static func title(
+        transmitterType: CGMTransmitterType,
+        transmitterID: String?,
+        bluetoothName: String?,
+        isAnubis: Bool = false
+    ) -> String? {
+        switch transmitterType {
+        case .dexcom:
+            if isAnubis { return anubisTitle }
+            guard let transmitterID, !transmitterID.isEmpty else { return nil }
+
+            let title = transmitterType.detailedDescription(transmitterID: transmitterID)
+            return title == "Dexcom" ? nil : title
+
+        case .dexcomG7:
+            // `DX0000` and the shorter `DX` value mean "find a G7-family sensor". They do not
+            // identify the product, so prefer the Bluetooth name learned during discovery.
+            let storedID = transmitterID?.uppercased()
+            let identifier = storedID == nil
+                || storedID == ConstantsBluetoothPairing.dummyDexcomG7TypeTransmitterId
+                || storedID == "DX"
+                ? bluetoothName
+                : transmitterID
+
+            guard let identifier,
+                  identifier.uppercased().hasPrefix("DX"),
+                  identifier.count > 2
+            else { return nil }
+
+            return transmitterType.detailedDescription(transmitterID: identifier)
+
+        default:
+            return nil
+        }
+    }
 }
 
 extension CGMTransmitter {
@@ -295,6 +480,8 @@ extension CGMTransmitter {
     
     // default implementation, does nothing
     func calibrate(calibration: Calibration) {}
+
+    func transmitterCalibrationStatus() -> CGMTransmitterCalibrationStatus? { return nil }
     
     // default implementation, returns true
     func needsSensorStartTime() -> Bool { return true }
@@ -302,6 +489,9 @@ extension CGMTransmitter {
     // default implementation, returns false
     func needsSensorStartCode() -> Bool { return false }
     
+    // default implementation, returns false
+    func shouldWarnOnLargeCalibrationStep() -> Bool { return false }
+
     // default implementation, returns true
     func nonWebOOPAllowed() -> Bool { return true }
     
